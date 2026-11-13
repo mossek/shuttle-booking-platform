@@ -1,0 +1,6 @@
+# Packages the app needs to RUN. These go into the Docker image.
+# Versions are pinned (==) so every build gets exactly the same packages.
+fastapi==0.162.7
+uvicorn[standard]==0.54.0
+sqlalchemy==2.1.8
+psycopg[binary]==3.3.9

@@ -1,0 +1,9 @@
+# Local databases - never commit data
+*.db
+
+# Python clutter
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/

@@ -1,0 +1,7 @@
+# Settings for the tools (pytest and ruff) - no need to change these.
+[tool.pytest.ini_options]
+pythonpath = ["."]   # lets the tests find main.py
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100

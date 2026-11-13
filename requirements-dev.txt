@@ -1,0 +1,6 @@
+# Packages needed only to TEST and LINT the code (pipeline + your laptop).
+# They are NOT installed in the production Docker image - smaller and safer.
+-r requirements.txt
+pytest==9.1.1
+httpx2==2.13.1
+ruff==0.17.5
