@@ -1,0 +1,14 @@
+# Files Docker should NOT send to the build ("build context").
+# Smaller context = faster builds, and secrets/junk can never sneak into an image.
+.git
+.github
+.venv
+venv
+__pycache__
+.pytest_cache
+.ruff_cache
+*.db
+.env
+tests
+docker-compose.yml
+README.md

@@ -1,0 +1,38 @@
+# Runs the full app locally: the API + a PostgreSQL database, on one private network.
+# Start:  docker compose up --build -d
+# Stop:   docker compose down        (keeps the data)
+# Reset:  docker compose down -v     (also deletes the database volume)
+
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: shuttle
+      # Local-only password. ${VAR:-default} = use VAR if set, otherwise the default.
+      # Real passwords never go in Git - in Week 3 they come from Azure Key Vault.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-localdevpassword}
+      POSTGRES_DB: shuttle
+    volumes:
+      # Named volume: the data lives OUTSIDE the container, so it survives restarts
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # "Is Postgres ready to accept connections?"
+      test: ["CMD-SHELL", "pg_isready -U shuttle -d shuttle"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      # "db" is the service name above - Docker's network turns it into a hostname
+      DATABASE_URL: postgresql+psycopg://shuttle:${POSTGRES_PASSWORD:-localdevpassword}@db:5432/shuttle
+    depends_on:
+      db:
+        # Don't start the API until the db healthcheck passes (not just "started")
+        condition: service_healthy
+
+volumes:
+  pgdata:

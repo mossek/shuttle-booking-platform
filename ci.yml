@@ -1,0 +1,105 @@
+# CI pipeline for the Shuttle Booking API
+#   Every push / pull request:  lint -> test -> build image -> security scan
+#   Only on a push to main:     ...then push the image to GitHub Container Registry
+
+name: CI
+
+# --- WHEN does this pipeline run? ---------------------------------------------
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# --- Least privilege: by default the pipeline can only READ the repo ----------
+permissions:
+  contents: read
+
+jobs:
+  # ===========================================================================
+  # THURSDAY - Job 1: lint and test the code
+  # ===========================================================================
+  test:
+    name: Lint & test
+    runs-on: ubuntu-latest          # a fresh Linux VM from GitHub, deleted afterwards
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v7
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip                              # reuse downloaded packages between runs
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Run tests (pytest)
+        run: pytest
+
+  # ===========================================================================
+  # FRIDAY - Job 2: build the image (and push it, but only from main)
+  # ===========================================================================
+  build:
+    name: Build, scan & push image
+    needs: test                     # only runs if Job 1 passed
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write               # needed to push to GitHub Container Registry
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v7
+
+      # Registry names must be lowercase; ${VAR,,} is bash for "lowercase it"
+      - name: Work out the image name
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build the image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true                # keep it on the runner so we can scan it first
+          push: false
+          build-args: APP_VERSION=${{ github.sha }}
+          tags: |
+            ${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.IMAGE }}:latest
+          cache-from: type=gha      # reuse layers from earlier runs = faster builds
+          cache-to: type=gha,mode=max
+
+      # =========================================================================
+      # SATURDAY - add this step: scan the image BEFORE it is pushed anywhere
+      # Pinned to a commit SHA, not a tag - see the README for why.
+      # =========================================================================
+      - name: Scan image with Trivy
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE }}:${{ github.sha }}
+          severity: CRITICAL
+          ignore-unfixed: true      # only fail on problems that actually have a fix
+          exit-code: "1"            # 1 = fail the pipeline if anything is found
+          format: table
+
+      # --- FRIDAY again: log in and push (skipped for pull requests) -----------
+      - name: Log in to GitHub Container Registry
+        if: github.event_name == 'push'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}   # temporary token GitHub creates per run
+
+      - name: Push the image
+        if: github.event_name == 'push'
+        run: |
+          docker push "$IMAGE:${{ github.sha }}"
+          docker push "$IMAGE:latest"
