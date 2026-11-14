@@ -32,3 +32,36 @@ jobs:
 
       - name: Run tests (pytest)
         run: pytest
+
+  # Build the image (and push it, but only from main)
+  # ===========================================================================
+  build:
+    name: Build, scan & push image
+    needs: test                     # only runs if Job 1 passed
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write               # needed to push to GitHub Container Registry
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v7
+
+      # Registry names must be lowercase; ${VAR,,} is bash for "lowercase it"
+      - name: Work out the image name
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build the image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true                # keep it on the runner so we can scan it first
+          push: false
+          build-args: APP_VERSION=${{ github.sha }}
+          tags: |
+            ${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.IMAGE }}:latest
+          cache-from: type=gha      # reuse layers from earlier runs = faster builds
+          cache-to: type=gha,mode=max
