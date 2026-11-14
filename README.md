@@ -10,17 +10,14 @@ platform: containerised, tested, scanned and shipped automatically by a CI pipel
 
 ## Pipeline
 
-```mermaid
 flowchart LR
-    A[git push / pull request] --> B[Lint<br/>ruff]
-    B --> C[Test<br/>pytest]
-    C --> D[Build image<br/>Docker Buildx]
-    D --> E{Trivy scan<br/>CRITICAL?}
-    E -- found --> F[Pipeline fails]
-    E -- clean --> G{Push to main?}
-    G -- yes --> H[Push to GHCR<br/>tag = commit SHA]
-    G -- no, PR --> I[Stop - nothing published]
-```
+    A[git push / pull request] --> B["Lint & test<br/>ruff + pytest"]
+    B --> C[Build<br/>image saved as artifact]
+    C --> D{Scan<br/>Trivy: CRITICAL?}
+    D -- found --> F[Pipeline fails]
+    D -- clean --> E{Push to main?}
+    E -- yes --> G[Push to GHCR<br/>commit SHA + latest]
+    E -- no, PR --> H[Stop - nothing published]
 
 ## What's in it
 
