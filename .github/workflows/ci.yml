@@ -36,7 +36,7 @@ jobs:
   # Build the image (and push it, but only from main)
   # ===========================================================================
   build:
-    name: Build, scan & push image
+    name: Build
     needs: test                     # only runs if Job 1 passed
     runs-on: ubuntu-latest
     permissions:
@@ -68,8 +68,12 @@ jobs:
 
     # Trivy image scan
     # ===========================================================================
-
-      - name: Scan image with Trivy
+  scan:
+    name: Scan image with Trivy
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the code
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ env.IMAGE }}:${{ github.sha }}
@@ -78,10 +82,17 @@ jobs:
           exit-code: "1"
           format: table
 
-    # push docker image to GitHub Container Registry (GHCR)
+    # push docker image to GitHub Container Registry (only from main)
     # ===========================================================================
-
-      - name: Log in to GitHub Container Registry
+  push:
+    name: Push image to GitHub Container Registry
+    needs: scan
+    runs-on: ubuntu-latest
+    permissions:  
+      contents: read
+      packages: write
+    steps:
+      - name: Check out the code
         if: github.event_name == 'push'
         uses: docker/login-action@v4
         with:
