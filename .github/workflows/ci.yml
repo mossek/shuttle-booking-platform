@@ -109,6 +109,13 @@ jobs:
       contents: read
       packages: write
     steps:
+      - name: Download image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: image-tar
+      - name: Load the image
+        run: docker load -i "${{ runner.temp }}/image.tar"
+
       - name: Work out the image name
         run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
 
