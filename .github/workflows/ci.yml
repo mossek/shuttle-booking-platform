@@ -129,5 +129,6 @@ jobs:
 
       - name: Push the image
         run: |
+          docker tag "${IMAGE}:${{ github.sha }}" "${IMAGE}:latest"
           docker push "${IMAGE}:${{ github.sha }}"
           docker push "${IMAGE}:latest"
