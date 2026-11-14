@@ -63,7 +63,7 @@ def test_list_trips(client):
 
 def test_get_missing_trip_returns_404(client):
     response = client.get("/trips/999")
-    assert response.status_code == 400
+    assert response.status_code == 404
 
 
 def test_too_many_passengers_is_rejected(client):
