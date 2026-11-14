@@ -10,6 +10,8 @@ platform: containerised, tested, scanned and shipped automatically by a CI pipel
 
 ## Pipeline
 
+```mermaid
+
 flowchart LR
     A[git push / pull request] --> B["Lint & test<br/>ruff + pytest"]
     B --> C[Build<br/>image saved as artifact]
@@ -18,6 +20,8 @@ flowchart LR
     D -- clean --> E{Push to main?}
     E -- yes --> G[Push to GHCR<br/>commit SHA + latest]
     E -- no, PR --> H[Stop - nothing published]
+```
+
 
 ## What's in it
 
