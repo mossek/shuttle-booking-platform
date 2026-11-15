@@ -1,0 +1,13 @@
+# Provider plugins Terraform downloads - big, and recreated by `terraform init`
+.terraform/
+
+# State never goes in Git (it lives in Azure Storage, and can contain secrets)
+*.tfstate
+*.tfstate.*
+
+# Plan files and local variable files can contain sensitive values
+*.tfplan
+*.tfvars
+
+# NOTE: .terraform.lock.hcl is NOT ignored - commit it. It pins the exact
+# provider versions so your PC and the pipeline use identical providers.
