@@ -1,0 +1,21 @@
+# -----------------------------------------------------------------------------
+# Values printed after `terraform apply` (and readable with `terraform output`)
+# -----------------------------------------------------------------------------
+
+output "app_url" {
+  description = "Public URL of the API"
+  value       = "https://${azurerm_container_app.api.ingress[0].fqdn}"
+}
+
+output "resource_group" {
+  value = azurerm_resource_group.main.name
+}
+
+output "acr_login_server" {
+  description = "Registry address the pipeline will push to"
+  value       = azurerm_container_registry.main.login_server
+}
+
+output "container_app_name" {
+  value = azurerm_container_app.api.name
+}
