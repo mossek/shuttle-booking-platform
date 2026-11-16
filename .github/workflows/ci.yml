@@ -147,4 +147,4 @@ jobs:
           ACR="${{ vars.ACR_NAME }}.azurecr.io/shuttle-booking-platform"
           az acr login --name "${{ vars.ACR_NAME }}"
           docker tag "${IMAGE}:${{ github.sha }}" "${ACR}:${{ github.sha }}"
-          docker push "${ACR}:${{ github.sha }}
+          docker push "${ACR}:${{ github.sha }}"
