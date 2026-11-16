@@ -108,6 +108,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write
     steps:
       - name: Download image artifact
         uses: actions/download-artifact@v8
@@ -127,8 +128,23 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Push the image
+      - name: Push the image to GitHub Container Registry
         run: |
           docker tag "${IMAGE}:${{ github.sha }}" "${IMAGE}:latest"
           docker push "${IMAGE}:${{ github.sha }}"
           docker push "${IMAGE}:latest"
+
+
+      - name: sign in to Azure (OIDC - no secrets)
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      
+      - name: Push the image to Azure Container Registry
+        run: |
+          ACR="${{ vars.ACR_NAME }}.azurecr.io/shuttle-booking-platform"
+          az acr login --name "${{ vars.ACR_NAME }}"
+          docker tag "${IMAGE}:${{ github.sha }}" "${ACR}:${{ github.sha }}"
+          docker push "${ACR}:${{ github.sha }}
