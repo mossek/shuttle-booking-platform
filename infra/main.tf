@@ -77,6 +77,11 @@ resource "azurerm_container_app_environment" "main" {
   logs_destination           = "log-analytics"
   log_analytics_workspace_id = azurerm_log_analytics_workspace.main.id
   tags                       = local.tags
+  workload_profile {
+    name                  = "Consumption"
+    workload_profile_type = "Consumption"
+  }
+
 }
 
 # --- The API -----------------------------------------------------------------
@@ -86,6 +91,8 @@ resource "azurerm_container_app" "api" {
   container_app_environment_id = azurerm_container_app_environment.main.id
   revision_mode                = "Single" # one live version at a time
   tags                         = local.tags
+  workload_profile_name        = "Consumption"
+
 
   identity {
     type         = "UserAssigned"
@@ -123,6 +130,19 @@ resource "azurerm_container_app" "api" {
         transport = "HTTP"
         port      = 8000
         path      = "/health"
+      }
+      readiness_probe {
+        transport               = "HTTP"
+        port                    = 8000
+        path                    = "/health"
+        interval_seconds        = 5
+        success_count_threshold = 1
+      }
+      startup_probe {
+        transport               = "TCP"
+        port                    = 8000
+        interval_seconds        = 1
+        failure_count_threshold = 30
       }
     }
   }
