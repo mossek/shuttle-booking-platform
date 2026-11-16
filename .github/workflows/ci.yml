@@ -148,3 +148,43 @@ jobs:
           az acr login --name "${{ vars.ACR_NAME }}"
           docker tag "${IMAGE}:${{ github.sha }}" "${ACR}:${{ github.sha }}"
           docker push "${ACR}:${{ github.sha }}"
+
+  deploy:
+    name: Deploy
+    needs: push
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: sign in to Azure (OIDC - no secrets)
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy the new image to container Apps
+        run:
+          az config set extension.use_dynamic_install=yes_without_prompt
+          az containerapp update \
+            --name shuttle-booking-platform \
+            --resource-group ${{ vars.AZURE_RESOURCE_GROUP }} \
+            --image "${{ vars.ACR_NAME }}.azurecr.io/shuttle-booking-platform:${{ github.sha }}"
+
+      - name: Verify the new version is live
+        run: |
+          FQDN=$(az containerapp show --name shuttle-booking-platform --resource-group ${{ vars.AZURE_RESOURCE_GROUP }} --query properties.configuration.ingress.fqdn -o tsv)
+          echo "Waiting for the new version to be live at https://${FQDN}..." 
+          for i in ${seq 1 12}; do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://${FQDN}/health")
+            if [ "$STATUS" -eq 200 ]; then
+              echo "New version is live!"
+              exit 0
+            fi
+            echo "Attempt $i: New version not live yet (status code: $STATUS). Retrying in 10 seconds..."
+            sleep 10
+          done
+          echo "New version did not become live after 2 minutes. Please check the deployment."
+          exit 1
