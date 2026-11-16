@@ -165,12 +165,12 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Deploy the new image to container Apps
-        run:
+      - name: Deploy the new image to Container Apps
+        run: |
           az config set extension.use_dynamic_install=yes_without_prompt
           az containerapp update \
-            --name shuttle-booking-platform \
-            --resource-group ${{ vars.RESOURCE_GROUP }} \
+            --name "${{ vars.CONTAINER_APP }}" \
+            --resource-group "${{ vars.RESOURCE_GROUP }}" \
             --image "${{ vars.ACR_NAME }}.azurecr.io/shuttle-booking-platform:${{ github.sha }}"
 
       - name: Verify the new version is live
