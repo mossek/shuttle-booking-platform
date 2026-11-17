@@ -1,0 +1,14 @@
+# Store text files with LF in the repo and check them out as LF on every OS.
+# Our pipeline runs on Linux, and VS Code handles LF fine on Windows.
+* text=auto eol=lf
+
+# Windows scripts must keep CRLF or they can misbehave on Windows
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary files: never convert anything inside them
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.tar binary
