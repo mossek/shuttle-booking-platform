@@ -143,6 +143,8 @@ resource "azurerm_container_app" "api" {
         port                    = 8000
         interval_seconds        = 1
         failure_count_threshold = 30
+        initial_delay           = 1
+
       }
     }
   }
@@ -151,7 +153,9 @@ resource "azurerm_container_app" "api" {
   # Without this, every `terraform apply` would roll the app back to
   # var.container_image.
   lifecycle {
-    ignore_changes = [template[0].container[0].image]
+    ignore_changes = [template[0].container[0].image,
+                      registry[0].identity,
+                      ]
   }
 
   # Make sure the pull permission exists before the app tries to use it

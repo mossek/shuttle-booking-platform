@@ -13,6 +13,14 @@ terraform {
       source  = "hashicorp/azurerm"
       version = "~> 4.81"
     }
+    # Talks to Microsoft Entra ID (users, apps, service principals).
+    # azurerm manages Azure RESOURCES; azuread manages IDENTITIES.
+    azuread = {
+      source  = "hashicorp/azuread"
+      version = "~> 3.10"
+    }
+
+
     # Generates a random suffix so globally-unique names (like ACR) don't clash.
     random = {
       source  = "hashicorp/random"
@@ -35,4 +43,7 @@ provider "azurerm" {
   # No subscription_id here on purpose: it is read from the
   # ARM_SUBSCRIPTION_ID environment variable, so no IDs are committed to Git
   # and the pipeline can set its own.
+}
+provider "azuread" {
+  # Uses your Azure CLI sign-in and its tenant - nothing to configure.
 }

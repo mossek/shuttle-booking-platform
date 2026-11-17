@@ -25,3 +25,9 @@ variable "container_image" {
   type        = string
   default     = "ghcr.io/mossek/shuttle-booking-platform:latest"
 }
+
+variable "github_deployer_name" {
+  description = "Display name of the Entra app registration GitHub Actions uses to deploy"
+  type        = string
+  default     = "github-shuttle-deploy"
+}
