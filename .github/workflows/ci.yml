@@ -159,7 +159,6 @@ jobs:
       
       - name: Push the image to Azure Container Registry
         run: |
-          run: |
           ACR="${ACR_NAME}.azurecr.io/shuttle-booking-platform"
           az acr login --name "$ACR_NAME"
           docker tag "${IMAGE}:${{ github.sha }}" "${ACR}:${{ github.sha }}"
