@@ -105,6 +105,8 @@ jobs:
     needs: scan
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    outputs:
+      acr_image: ${{ steps.push.outputs.acr_image }}
     permissions:
       contents: read
       packages: write
@@ -142,10 +144,24 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
       
+      - name: Find the container registry in the resource group
+        id: find-acr
+        run: |
+          NAMES=$(az acr list --resource-group "${{ vars.RESOURCE_GROUP }}" --query "[].name" -o tsv)
+          COUNT=$(echo "$NAMES" | grep -c .)
+          if [ "$COUNT" -ne 1 ]; then
+            echo "Expected exactly 1 registry in ${{ vars.RESOURCE_GROUP }}, found $COUNT: $NAMES"
+            exit 1
+          fi
+          echo "Using registry: $NAMES"
+          echo "ACR_NAME=$NAMES" >> "$GITHUB_ENV"
+          echo "name=$NAMES"     >> "$GITHUB_OUTPUT"
+      
       - name: Push the image to Azure Container Registry
         run: |
-          ACR="${{ vars.ACR_NAME }}.azurecr.io/shuttle-booking-platform"
-          az acr login --name "${{ vars.ACR_NAME }}"
+          run: |
+          ACR="${ACR_NAME}.azurecr.io/shuttle-booking-platform"
+          az acr login --name "$ACR_NAME"
           docker tag "${IMAGE}:${{ github.sha }}" "${ACR}:${{ github.sha }}"
           docker push "${ACR}:${{ github.sha }}"
 
