@@ -106,7 +106,7 @@ jobs:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     outputs:
-      acr_image: ${{ steps.push.outputs.acr_image }}
+      acr_name: ${{ steps.push.outputs.acr_name }}
     permissions:
       contents: read
       packages: write
