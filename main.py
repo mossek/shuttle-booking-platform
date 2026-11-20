@@ -1,7 +1,7 @@
 """
 Shuttle Booking API
 -------------------
-Bookings for Phenyo Move 'n Meal shared trips.
+Bookings and quote requests for Phenyo Move 'n Meal.
 
 The idea in one paragraph:
   You (the operator) create a TRIP: a journey the H1 could make, with 8
@@ -9,6 +9,10 @@ The idea in one paragraph:
   1 to 8 seats. When every seat is taken the trip becomes "full" - that is
   your signal to run it. Cancelling is free: the booking is marked
   "cancelled" (never deleted) and its seats become available again.
+
+  Shuttle contracts (staff transport) and group hire (tourism, weddings,
+  funerals, parties) need a price first, so customers send a QUOTE REQUEST.
+  You price it yourself and move it through: new -> quoted -> accepted/declined.
 
 Endpoints:
   GET  /health                      "Am I alive?" + which version is running
@@ -18,6 +22,10 @@ Endpoints:
   POST /trips/{id}/bookings         customer books seats (no overbooking)
   GET  /trips/{id}/bookings         operator sees who booked
   POST /bookings/{id}/cancel        free cancellation
+  POST /quote-requests              customer asks for a quote
+  GET  /quote-requests              operator sees requests (?status=new)
+  GET  /quote-requests/{id}         one request
+  POST /quote-requests/{id}/status  operator moves a request to its next status
 
 Where the data lives:
   DATABASE_URL environment variable. Not set -> local SQLite file shuttle.db.
@@ -29,7 +37,7 @@ import os
 from datetime import UTC, datetime
 
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import (
     DateTime,
     Enum,
@@ -95,6 +103,32 @@ class BookingStatus(str, enum.Enum):
     cancelled = "cancelled"
 
 
+class RequestType(str, enum.Enum):
+    shuttle_contract = "shuttle_contract"  # staff transport, recurring shifts
+    tourism = "tourism"
+    wedding = "wedding"
+    funeral = "funeral"
+    party = "party"
+
+
+class QuoteStatus(str, enum.Enum):
+    new = "new"            # just arrived, nobody has looked at it
+    quoted = "quoted"      # you sent the customer a price
+    accepted = "accepted"  # customer said yes
+    declined = "declined"  # customer said no, or you can't do it
+
+
+# Which status changes are allowed. Anything not listed is refused with 409.
+# This is a small "state machine": it stops mistakes like accepting a request
+# that was never quoted, or re-opening one that was already declined.
+QUOTE_TRANSITIONS: dict[QuoteStatus, set[QuoteStatus]] = {
+    QuoteStatus.new: {QuoteStatus.quoted, QuoteStatus.declined},
+    QuoteStatus.quoted: {QuoteStatus.accepted, QuoteStatus.declined},
+    QuoteStatus.accepted: set(),  # final
+    QuoteStatus.declined: set(),  # final
+}
+
+
 # ---------------------------------------------------------------------------
 # 3. Database tables
 # ---------------------------------------------------------------------------
@@ -132,6 +166,33 @@ class Booking(Base):
     status: Mapped[BookingStatus] = mapped_column(
         Enum(BookingStatus), default=BookingStatus.active
     )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now(UTC).replace(tzinfo=None)
+    )
+
+
+class QuoteRequest(Base):
+    """A customer asking for a price: a shuttle contract or a group hire."""
+
+    __tablename__ = "quote_requests"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    request_type: Mapped[RequestType] = mapped_column(Enum(RequestType))
+    contact_name: Mapped[str] = mapped_column(String(100))
+    phone: Mapped[str] = mapped_column(String(20))
+    email: Mapped[str | None] = mapped_column(String(254), nullable=True)
+    company_name: Mapped[str | None] = mapped_column(String(150), nullable=True)
+    pickup: Mapped[str] = mapped_column(String(100))
+    dropoff: Mapped[str] = mapped_column(String(100))
+    # Group hire: the date of the event. Shuttle contract: not used.
+    travel_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    return_trip: Mapped[bool] = mapped_column(default=False)
+    # Shuttle contract: e.g. "Mon-Fri, 06:00 and 18:00 shifts". Group hire: not used.
+    shift_details: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    # Any group size is accepted - a 20-person wedding is a lead, not an error.
+    passengers: Mapped[int] = mapped_column(Integer)
+    notes: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    status: Mapped[QuoteStatus] = mapped_column(Enum(QuoteStatus), default=QuoteStatus.new)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=lambda: datetime.now(UTC).replace(tzinfo=None)
     )
@@ -179,6 +240,52 @@ class BookingOut(BaseModel):
     seats: int
     status: BookingStatus
     created_at: datetime
+
+
+class QuoteRequestFields(BaseModel):
+    """The fields a quote request has, shared by what comes in and what goes out."""
+
+    request_type: RequestType = Field(examples=["wedding"])
+    contact_name: str = Field(min_length=1, max_length=100, examples=["Naledi S"])
+    phone: str = Field(pattern=r"^\+?[0-9]{10,14}$", examples=["0821234567"])
+    email: str | None = Field(
+        default=None, max_length=254, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$"
+    )
+    company_name: str | None = Field(default=None, max_length=150)
+    pickup: str = Field(min_length=1, max_length=100, examples=["Cosmo City"])
+    dropoff: str = Field(min_length=1, max_length=100, examples=["Magaliesburg"])
+    travel_date: datetime | None = Field(default=None, examples=["2026-12-12T09:00:00"])
+    return_trip: bool = False
+    shift_details: str | None = Field(default=None, max_length=300)
+    passengers: int = Field(ge=1, le=500, examples=[20])
+    notes: str | None = Field(default=None, max_length=1000)
+
+
+class QuoteRequestIn(QuoteRequestFields):
+    """What a customer sends. Only NEW requests are checked against these rules,
+    so changing a rule later never makes old rows unreadable."""
+
+    @model_validator(mode="after")
+    def check_details_for_request_type(self):
+        """Rules that depend on more than one field (so Field() can't do them)."""
+        if self.request_type == RequestType.shuttle_contract:
+            if not self.company_name:
+                raise ValueError("company_name is required for a shuttle contract")
+            if not self.shift_details:
+                raise ValueError("shift_details is required for a shuttle contract")
+        elif self.travel_date is None:
+            raise ValueError("travel_date is required for group hire")
+        return self
+
+
+class QuoteRequestOut(QuoteRequestFields):
+    id: int
+    status: QuoteStatus
+    created_at: datetime
+
+
+class QuoteStatusIn(BaseModel):
+    status: QuoteStatus
 
 
 # ---------------------------------------------------------------------------
@@ -230,12 +337,11 @@ def lock_trip(session: Session, trip_id: int) -> Trip:
 
 
 # ---------------------------------------------------------------------------
-# 6. Startup - Tables are created by Alembic migrations (see migrations/README.md)
-#    NOTE: create_all never CHANGES an existing table. Step 3 replaces this
-#    with Alembic migrations.
+# 6. The app. Tables are created and changed by Alembic migrations
+#    (migrations/versions/), which the container runs before it starts.
 # ---------------------------------------------------------------------------
-
 app = FastAPI(title="Shuttle Booking API", version=APP_VERSION)
+
 # ---------------------------------------------------------------------------
 # 7. Endpoints
 #    "with Session(engine) as session, session.begin():" opens ONE transaction:
@@ -335,3 +441,52 @@ def cancel_booking(booking_id: int):
 
         session.flush()
         return BookingOut.model_validate(booking, from_attributes=True)
+
+
+# --- Quote requests ----------------------------------------------------------
+def quote_out(quote: QuoteRequest) -> QuoteRequestOut:
+    return QuoteRequestOut.model_validate(quote, from_attributes=True)
+
+
+@app.post("/quote-requests", response_model=QuoteRequestOut, status_code=201)
+def create_quote_request(quote_in: QuoteRequestIn):
+    with Session(engine) as session, session.begin():
+        quote = QuoteRequest(**quote_in.model_dump())
+        session.add(quote)
+        session.flush()
+        return quote_out(quote)
+
+
+@app.get("/quote-requests", response_model=list[QuoteRequestOut])
+def list_quote_requests(status: QuoteStatus | None = None):
+    with Session(engine) as session:
+        query = select(QuoteRequest).order_by(QuoteRequest.created_at)
+        if status is not None:
+            query = query.where(QuoteRequest.status == status)
+        return [quote_out(q) for q in session.scalars(query).all()]
+
+
+@app.get("/quote-requests/{quote_id}", response_model=QuoteRequestOut)
+def get_quote_request(quote_id: int):
+    with Session(engine) as session:
+        quote = session.get(QuoteRequest, quote_id)
+        if quote is None:
+            raise HTTPException(status_code=404, detail="Quote request not found")
+        return quote_out(quote)
+
+
+@app.post("/quote-requests/{quote_id}/status", response_model=QuoteRequestOut)
+def change_quote_status(quote_id: int, change: QuoteStatusIn):
+    with Session(engine) as session, session.begin():
+        quote = session.get(QuoteRequest, quote_id)
+        if quote is None:
+            raise HTTPException(status_code=404, detail="Quote request not found")
+        if change.status not in QUOTE_TRANSITIONS[quote.status]:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Cannot move a quote request from {quote.status.value} "
+                f"to {change.status.value}",
+            )
+        quote.status = change.status
+        session.flush()
+        return quote_out(quote)

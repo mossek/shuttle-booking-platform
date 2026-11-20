@@ -174,3 +174,99 @@ def test_cancelling_twice_returns_409(client, trip_id):
 
 def test_cancel_missing_booking_returns_404(client):
     assert client.post("/bookings/999/cancel").status_code == 404
+
+
+# --- Quote requests ----------------------------------------------------------
+
+WEDDING = {
+    "request_type": "wedding",
+    "contact_name": "Naledi S",
+    "phone": "0821234567",
+    "pickup": "Cosmo City",
+    "dropoff": "Magaliesburg",
+    "travel_date": "2026-12-12T09:00:00",
+    "return_trip": True,
+    "passengers": 20,
+}
+
+SHUTTLE_CONTRACT = {
+    "request_type": "shuttle_contract",
+    "contact_name": "Sipho D",
+    "phone": "0119876543",
+    "company_name": "Example Call Centre",
+    "pickup": "Cosmo City",
+    "dropoff": "Randburg",
+    "shift_details": "Mon-Fri, 06:00 and 18:00 shifts",
+    "passengers": 12,
+}
+
+
+def test_group_hire_request_starts_as_new(client):
+    response = client.post("/quote-requests", json=WEDDING)
+    assert response.status_code == 201
+    body = response.json()
+    assert body["status"] == "new"
+    assert body["passengers"] == 20  # bigger than one H1 - still accepted
+
+
+def test_group_hire_needs_a_travel_date(client):
+    no_date = {k: v for k, v in WEDDING.items() if k != "travel_date"}
+    assert client.post("/quote-requests", json=no_date).status_code == 422
+
+
+def test_shuttle_contract_is_accepted(client):
+    response = client.post("/quote-requests", json=SHUTTLE_CONTRACT)
+    assert response.status_code == 201
+    assert response.json()["company_name"] == "Example Call Centre"
+
+
+def test_shuttle_contract_needs_company_and_shifts(client):
+    no_company = {**SHUTTLE_CONTRACT, "company_name": None}
+    no_shifts = {**SHUTTLE_CONTRACT, "shift_details": None}
+    assert client.post("/quote-requests", json=no_company).status_code == 422
+    assert client.post("/quote-requests", json=no_shifts).status_code == 422
+
+
+def test_unknown_request_type_is_rejected(client):
+    bad = {**WEDDING, "request_type": "concert"}
+    assert client.post("/quote-requests", json=bad).status_code == 422
+
+
+def test_list_quote_requests_filters_by_status(client):
+    first = client.post("/quote-requests", json=WEDDING).json()["id"]
+    client.post("/quote-requests", json=SHUTTLE_CONTRACT)
+    client.post(f"/quote-requests/{first}/status", json={"status": "quoted"})
+
+    assert len(client.get("/quote-requests").json()) == 2
+    new_only = client.get("/quote-requests", params={"status": "new"}).json()
+    assert [q["request_type"] for q in new_only] == ["shuttle_contract"]
+
+
+def test_quote_moves_new_to_quoted_to_accepted(client):
+    quote_id = client.post("/quote-requests", json=WEDDING).json()["id"]
+
+    quoted = client.post(f"/quote-requests/{quote_id}/status", json={"status": "quoted"})
+    accepted = client.post(f"/quote-requests/{quote_id}/status", json={"status": "accepted"})
+
+    assert quoted.json()["status"] == "quoted"
+    assert accepted.json()["status"] == "accepted"
+
+
+def test_cannot_accept_a_quote_that_was_never_quoted(client):
+    quote_id = client.post("/quote-requests", json=WEDDING).json()["id"]
+    response = client.post(f"/quote-requests/{quote_id}/status", json={"status": "accepted"})
+    assert response.status_code == 409
+    assert "from new to accepted" in response.json()["detail"]
+
+
+def test_declined_is_final(client):
+    quote_id = client.post("/quote-requests", json=WEDDING).json()["id"]
+    client.post(f"/quote-requests/{quote_id}/status", json={"status": "declined"})
+    response = client.post(f"/quote-requests/{quote_id}/status", json={"status": "quoted"})
+    assert response.status_code == 409
+
+
+def test_missing_quote_request_returns_404(client):
+    assert client.get("/quote-requests/999").status_code == 404
+    missing = client.post("/quote-requests/999/status", json={"status": "quoted"})
+    assert missing.status_code == 404
