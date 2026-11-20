@@ -124,6 +124,20 @@ resource "azurerm_container_app" "api" {
       image  = var.container_image
       cpu    = 0.25
       memory = "0.5Gi" # Container Apps requires memory = 2 x cpu at this size
+      env {
+        name  = "DATABASE_URL"
+        value = "postgresql+psycopg://${azurerm_user_assigned_identity.app.name}@${azurerm_postgresql_flexible_server.main.fqdn}:5432/${azurerm_postgresql_flexible_server_database.shuttle.name}?sslmode=require"
+      }
+
+      env {
+        name  = "DATABASE_AUTH"
+        value = "entra"
+      }
+
+      env {
+        name  = "AZURE_CLIENT_ID"
+        value = azurerm_user_assigned_identity.app.client_id
+      }
 
       # Same /health endpoint your Dockerfile HEALTHCHECK uses
       liveness_probe {
@@ -159,5 +173,8 @@ resource "azurerm_container_app" "api" {
   }
 
   # Make sure the pull permission exists before the app tries to use it
-  depends_on = [azurerm_role_assignment.app_acr_pull]
+  depends_on = [
+    azurerm_role_assignment.app_acr_pull,
+    azurerm_postgresql_flexible_server_active_directory_administrator.app,
+  ]
 }
