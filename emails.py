@@ -28,6 +28,7 @@ SLOGAN = "Every move is a win"
 PHONE = "+27 72 182 9894"
 WHATSAPP_URL = "https://wa.me/27721829894"
 WEBSITE = "https://www.movenmeal.com"
+REVIEW_URL = "https://g.page/r/CditbNbaiJ-qEBM/review"
 SIGNATURE = "The Phenyo Move & Meal Team"
 
 LOGO_PATH = Path(__file__).parent / "static" / "email-logo.png"
@@ -119,7 +120,8 @@ def layout(preheader: str, content: str, signature: bool = True) -> str:
 
    font-size:12px;line-height:1.6">
     Airport transfers &middot; Corporate &amp; staff shuttles &middot; Group transport &middot; Tours<br>
-    Johannesburg, South Africa
+    Johannesburg, South Africa<br>
+    <a href="{REVIEW_URL}" style="color:#ffffff">Travelled with us? Leave us a review on Google</a>
   </td></tr>
 
 </table>
@@ -186,4 +188,26 @@ def sales_notification(
     """
     return layout(
         f"New request #{reference}: {service} for {contact_name}", content, signature=False
+    )
+
+
+def review_request(first_name: str, reference: int, service: str) -> str:
+    content = f"""
+    <h1 style="margin:0 0 6px;font-size:22px;color:{DARK}">Thank you for travelling with us</h1>
+    <p style="margin:0 0 16px;color:{MUTED};font-size:14px">Reference #{reference}</p>
+    <p style="margin:0 0 12px">Hi {escape(first_name)},</p>
+    <p style="margin:0 0 12px">Thank you for choosing {COMPANY} for {escape(service)}.
+    We hope you arrived safely and comfortably.</p>
+    <p style="margin:0 0 20px">Would you take one minute to tell others about your trip?
+    Your review helps more people find a transport company they can trust - and it
+    means a lot to our team.</p>
+    <p style="margin:0 0 24px;text-align:center">
+      {button("Rate your trip on Google", REVIEW_URL)}
+    </p>
+    <p style="margin:0 0 12px">Something we could have done better? Simply reply to this
+    email - we read every message.</p>
+    <p style="margin:0">We look forward to moving you again.</p>
+    """
+    return layout(
+        "How was your trip? Tell us in one minute - it helps others find us.", content
     )

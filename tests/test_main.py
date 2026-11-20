@@ -450,3 +450,39 @@ def test_customer_input_is_escaped_in_emails():
     assert "<b>Evil</b>" not in html
     assert "&lt;b&gt;Evil&lt;/b&gt;" in html
     assert "<img src=x" not in html
+
+
+def complete(client, quote_id):
+    for status in ("quoted", "accepted", "completed"):
+        response = client.post(f"/quote-requests/{quote_id}/status", json={"status": status})
+    return response
+
+
+def test_completed_trip_sends_a_review_request(client, public, mailbox):
+    quote_id = public.post(
+        "/quote-requests", json={**AIRPORT, "email": "lerato@example.com"}
+    ).json()["id"]
+    mailbox.clear()
+    assert complete(client, quote_id).json()["status"] == "completed"
+    assert mailbox == [
+        ("lerato@example.com", "Thank you for travelling with Phenyo Move & Meal")
+    ]
+
+
+def test_only_accepted_quotes_can_be_completed(client, public):
+    quote_id = public.post("/quote-requests", json=AIRPORT).json()["id"]
+    response = client.post(f"/quote-requests/{quote_id}/status", json={"status": "completed"})
+    assert response.status_code == 409
+
+
+def test_completed_is_final(client, public):
+    quote_id = public.post("/quote-requests", json=AIRPORT).json()["id"]
+    complete(client, quote_id)
+    response = client.post(f"/quote-requests/{quote_id}/status", json={"status": "declined"})
+    assert response.status_code == 409
+
+
+def test_review_email_contains_the_google_review_link():
+    import emails
+
+    assert emails.REVIEW_URL in emails.review_request("Lerato", 3, "an airport transfer")
