@@ -19,7 +19,6 @@ from pathlib import Path
 # Brand colours, taken from the website's design system (src/index.css).
 DARK = "#1b3226"  # deep green - header and footer
 GREEN = "#1d8749"  # primary green - buttons and accents
-GOLD = "#ec9213"  # accent - the slogan line
 TEXT = "#24312a"
 MUTED = "#5f6f66"
 PAGE = "#f3f6f4"
@@ -29,8 +28,7 @@ SLOGAN = "Every move is a win"
 PHONE = "+27 72 182 9894"
 WHATSAPP_URL = "https://wa.me/27721829894"
 WEBSITE = "https://www.movenmeal.com"
-SIGNATURE_NAME = "Moshe Sekhula"
-SIGNATURE_TITLE = "Founder"
+SIGNATURE = "The Phenyo Move & Meal Team"
 
 LOGO_PATH = Path(__file__).parent / "static" / "email-logo.png"
 
@@ -76,11 +74,10 @@ def layout(preheader: str, content: str, signature: bool = True) -> str:
     """The frame every email shares: logo header, slogan band, content, signature, footer."""
     signature_block = f"""<tr><td style="padding:8px 32px 32px">
     <table role="presentation" cellpadding="0" cellspacing="0"
-     style="border-top:3px solid {GOLD};width:100%">
+     style="border-top:3px solid {GREEN};width:100%">
       <tr><td style="padding-top:16px;color:{TEXT};font-size:14px;line-height:1.5">
-        <em style="color:{GOLD};font-size:15px;font-weight:bold">{SLOGAN}.</em><br><br>
-        <strong style="font-size:15px">{SIGNATURE_NAME}</strong><br>
-        <span style="color:{MUTED}">{SIGNATURE_TITLE}, {COMPANY}</span><br>
+        <em style="color:{GREEN};font-size:15px;font-weight:bold">{SLOGAN}.</em><br><br>
+        <strong style="font-size:15px">{SIGNATURE}</strong><br>
         <a href="tel:{PHONE.replace(" ", "")}" style="color:{GREEN};text-decoration:none">{PHONE}</a>
         &nbsp;|&nbsp;
         <a href="{WHATSAPP_URL}" style="color:{GREEN};text-decoration:none">WhatsApp</a>
