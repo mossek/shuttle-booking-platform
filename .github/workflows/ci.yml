@@ -33,6 +33,11 @@ jobs:
       - name: Run tests (pytest)
         run: pytest
 
+      - name: Check migrations match models
+        run: |
+           alembic upgrade head
+           alembic check
+
   # Build the image (and push it, but only from main)
   # ===========================================================================
   build:

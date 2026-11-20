@@ -37,6 +37,8 @@ RUN useradd --create-home --uid 10001 appuser \
 # Take ONLY the finished packages from the builder stage
 COPY --from=builder /opt/venv /opt/venv
 COPY main.py .
+COPY alembic.ini .
+COPY migrations ./migrations
 
 # Everything from here on runs as appuser (by its numeric ID - Kubernetes needs
 # a number to prove the container is not root)
@@ -49,4 +51,4 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
     CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["sh", "-c", "alembic upgrade head && exec uvicorn main:app --host 0.0.0.0 --port 8000"]

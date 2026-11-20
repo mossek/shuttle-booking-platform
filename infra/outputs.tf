@@ -19,3 +19,8 @@ output "acr_login_server" {
 output "container_app_name" {
   value = azurerm_container_app.api.name
 }
+
+output "postgres_host" {
+  description = "Hostname the app connects to"
+  value       = azurerm_postgresql_flexible_server.main.fqdn
+}
