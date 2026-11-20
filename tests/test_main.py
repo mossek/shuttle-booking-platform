@@ -410,7 +410,7 @@ def mailbox(monkeypatch):
     sent = []
     monkeypatch.setattr(main, "NOTIFY_EMAIL", "sales@example.com")
     monkeypatch.setattr(
-        main, "send_mail", lambda to, subject, body, reply_to=None: sent.append((to, subject))
+        main, "send_mail", lambda to, subject, html, reply_to=None: sent.append((to, subject))
     )
     return sent
 
@@ -421,7 +421,7 @@ def test_customer_with_email_gets_a_confirmation(public, mailbox):
     ).json()["id"]
     assert mailbox == [
         ("sales@example.com", f"New quote request #{quote_id}: airport_transfer (3 passengers)"),
-        ("lerato@example.com", f"We received your quote request (#{quote_id})"),
+        ("lerato@example.com", f"We've received your request (#{quote_id}) - Phenyo Move & Meal"),
     ]
 
 
@@ -438,3 +438,15 @@ def test_email_failure_does_not_lose_the_request(client, public, monkeypatch):
     monkeypatch.setattr(main, "send_mail", broken)
     assert public.post("/quote-requests", json=AIRPORT).status_code == 201
     assert len(client.get("/quote-requests").json()) == 1
+
+
+def test_customer_input_is_escaped_in_emails():
+    """A name like <script> must show as text, never run as HTML in the email."""
+    import emails
+
+    html = emails.customer_confirmation(
+        "<b>Evil</b>", 1, "an airport transfer", [("Notes", "<img src=x onerror=alert(1)>")]
+    )
+    assert "<b>Evil</b>" not in html
+    assert "&lt;b&gt;Evil&lt;/b&gt;" in html
+    assert "<img src=x" not in html
