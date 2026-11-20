@@ -196,7 +196,7 @@ WEDDING = {
     "phone": "0821234567",
     "pickup": "Cosmo City",
     "dropoff": "Magaliesburg",
-    "travel_date": "2026-12-12T09:00:00",
+    "travel_date": "2030-12-12T09:00:00",
     "return_trip": True,
     "passengers": 20,
     "consent": True,
@@ -329,7 +329,7 @@ AIRPORT = {
     "phone": "0821234567",
     "pickup": "Cosmo City",
     "dropoff": "OR Tambo Airport",
-    "travel_date": "2026-12-20T05:00:00",
+    "travel_date": "2030-12-20T05:00:00",
     "passengers": 3,
     "consent": True,
 }
@@ -395,3 +395,46 @@ def test_new_quote_request_triggers_an_email(public, monkeypatch):
     monkeypatch.setattr(main, "send_quote_email", lambda quote: sent.append(quote))
     quote_id = public.post("/quote-requests", json=AIRPORT).json()["id"]
     assert [q.id for q in sent] == [quote_id]
+
+
+def test_travel_date_in_the_past_is_rejected(public):
+    past = {**AIRPORT, "travel_date": "2020-01-01T08:00:00"}
+    response = public.post("/quote-requests", json=past)
+    assert response.status_code == 422
+    assert "past" in response.json()["detail"][0]["msg"]
+
+
+@pytest.fixture
+def mailbox(monkeypatch):
+    """Pretend Graph: capture emails instead of sending them."""
+    sent = []
+    monkeypatch.setattr(main, "NOTIFY_EMAIL", "sales@example.com")
+    monkeypatch.setattr(
+        main, "send_mail", lambda to, subject, body, reply_to=None: sent.append((to, subject))
+    )
+    return sent
+
+
+def test_customer_with_email_gets_a_confirmation(public, mailbox):
+    quote_id = public.post(
+        "/quote-requests", json={**AIRPORT, "email": "lerato@example.com"}
+    ).json()["id"]
+    assert mailbox == [
+        ("sales@example.com", f"New quote request #{quote_id}: airport_transfer (3 passengers)"),
+        ("lerato@example.com", f"We received your quote request (#{quote_id})"),
+    ]
+
+
+def test_customer_without_email_gets_no_confirmation(public, mailbox):
+    public.post("/quote-requests", json=AIRPORT)
+    assert [to for to, _ in mailbox] == ["sales@example.com"]
+
+
+def test_email_failure_does_not_lose_the_request(client, public, monkeypatch):
+    def broken(*args, **kwargs):
+        raise RuntimeError("Graph returned 403: Forbidden")
+
+    monkeypatch.setattr(main, "NOTIFY_EMAIL", "sales@example.com")
+    monkeypatch.setattr(main, "send_mail", broken)
+    assert public.post("/quote-requests", json=AIRPORT).status_code == 201
+    assert len(client.get("/quote-requests").json()) == 1

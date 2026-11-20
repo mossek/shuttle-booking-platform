@@ -38,9 +38,10 @@ import logging
 import os
 import secrets
 import time
+import urllib.error
 import urllib.request
 from collections import defaultdict, deque
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, Security
 from fastapi.middleware.cors import CORSMiddleware
@@ -75,7 +76,17 @@ ALLOWED_ORIGINS = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(","
 # Where new quote requests are emailed (a Microsoft 365 mailbox). Empty = no email.
 NOTIFY_EMAIL = os.getenv("NOTIFY_EMAIL", "")
 
+# South Africa is UTC+2 all year (no daylight saving), so a fixed offset is enough.
+SA_TIME = timezone(timedelta(hours=2), "SAST")
+
+# Our own log lines ("email sent", "could not email") go to the container's
+# console, where Log stream and Log Analytics pick them up.
 log = logging.getLogger("shuttle")
+log.setLevel(logging.INFO)
+if not log.handlers:
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+    log.addHandler(_handler)
 
 # The H1 has 9 seats; one is the driver's. This is a business rule, so it
 # lives in ONE named place instead of the number 8 scattered through the code.
@@ -320,6 +331,8 @@ class QuoteRequestIn(QuoteRequestFields):
                 raise ValueError("shift_details is required for a shuttle contract")
         elif self.request_type in DATED_REQUEST_TYPES and self.travel_date is None:
             raise ValueError("travel_date is required for this type of trip")
+        if self.travel_date and self.travel_date.date() < datetime.now(SA_TIME).date():
+            raise ValueError("travel_date cannot be in the past")
         return self
 
 
@@ -544,42 +557,102 @@ def check_rate_limit(ip: str) -> None:
     times.append(now)
 
 
+SERVICE_LABELS = {
+    RequestType.airport_transfer: "an airport transfer",
+    RequestType.shuttle_contract: "a corporate / staff shuttle",
+    RequestType.private_hire: "a private shuttle",
+    RequestType.wedding: "wedding transport",
+    RequestType.funeral: "funeral transport",
+    RequestType.party: "party or event transport",
+    RequestType.tourism: "a tour or travel package",
+    RequestType.other: "transport",
+}
+
+
+def send_mail(to: str, subject: str, body: str, reply_to: str | None = None) -> None:
+    """Send a plain-text email FROM the NOTIFY_EMAIL mailbox via Microsoft Graph.
+
+    The app logs in with its managed identity. Exchange only lets it send as
+    NOTIFY_EMAIL (the "Shuttle sales mailbox" scope), to any recipient.
+    """
+    from azure.identity import DefaultAzureCredential
+
+    token = DefaultAzureCredential().get_token("https://graph.microsoft.com/.default").token
+    message = {
+        "subject": subject,
+        "body": {"contentType": "Text", "content": body},
+        "toRecipients": [{"emailAddress": {"address": to}}],
+    }
+    if reply_to:
+        message["replyTo"] = [{"emailAddress": {"address": reply_to}}]
+    graph_request = urllib.request.Request(
+        f"https://graph.microsoft.com/v1.0/users/{NOTIFY_EMAIL}/sendMail",
+        data=json.dumps({"message": message, "saveToSentItems": True}).encode(),
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        urllib.request.urlopen(graph_request, timeout=15)
+    except urllib.error.HTTPError as error:
+        # Graph explains WHY in the response body - keep it, it's the useful part.
+        detail = error.read().decode(errors="replace")[:500]
+        raise RuntimeError(f"Graph returned {error.code}: {detail}") from None
+
+
+def describe_trip(quote: QuoteRequestOut) -> str:
+    when = f" on {quote.travel_date:%d %b %Y at %H:%M}" if quote.travel_date else ""
+    back = " (with a return trip)" if quote.return_trip else ""
+    return (
+        f"{SERVICE_LABELS[quote.request_type]} from {quote.pickup} to {quote.dropoff}"
+        f"{when} for {quote.passengers} passenger(s){back}"
+    )
+
+
 def send_quote_email(quote: QuoteRequestOut) -> None:
-    """Email the new request to NOTIFY_EMAIL via Microsoft Graph.
+    """Email the new request to you, and a confirmation to the customer.
 
     Runs AFTER the response is sent (a background task), so a slow or failing
     email never stops the customer's request from being saved.
     """
     if not NOTIFY_EMAIL:
         return
-    try:
-        from azure.identity import DefaultAzureCredential
 
-        token = DefaultAzureCredential().get_token("https://graph.microsoft.com/.default").token
-        lines = [
-            f"{field}: {value}"
-            for field, value in quote.model_dump(mode="json").items()
-            if value not in (None, "")
-        ]
-        message = {
-            "message": {
-                "subject": f"New quote request #{quote.id}: {quote.request_type.value} "
-                f"({quote.passengers} passengers)",
-                "body": {"contentType": "Text", "content": "\n".join(lines)},
-                "toRecipients": [{"emailAddress": {"address": NOTIFY_EMAIL}}],
-            },
-            "saveToSentItems": False,
-        }
-        graph_request = urllib.request.Request(
-            f"https://graph.microsoft.com/v1.0/users/{NOTIFY_EMAIL}/sendMail",
-            data=json.dumps(message).encode(),
-            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-            method="POST",
+    # 1. To you (sales@). "Reply" goes straight to the customer if they gave an email.
+    lines = [
+        f"{field}: {value}"
+        for field, value in quote.model_dump(mode="json").items()
+        if value not in (None, "")
+    ]
+    try:
+        send_mail(
+            NOTIFY_EMAIL,
+            f"New quote request #{quote.id}: {quote.request_type.value} "
+            f"({quote.passengers} passengers)",
+            "\n".join(lines),
+            reply_to=quote.email,
         )
-        urllib.request.urlopen(graph_request, timeout=15)
-    except Exception:
+        log.info("Emailed quote request %s to %s", quote.id, NOTIFY_EMAIL)
+    except Exception as error:  # noqa: BLE001 - any email failure is logged, never raised
         # Never lose the request over an email problem - it's saved either way.
-        log.exception("Could not email quote request %s", quote.id)
+        log.error("Could not email quote request %s: %s", quote.id, error)
+
+    # 2. To the customer, only if they gave an email address.
+    if not quote.email:
+        return
+    first_name = quote.contact_name.split()[0]
+    body = (
+        f"Hi {first_name},\n\n"
+        f"Thank you for contacting Phenyo Move & Meal. We've received your request "
+        f"(reference #{quote.id}) for {describe_trip(quote)}.\n\n"
+        "We'll send you a quote within 24 hours. Need to add something? Reply to this "
+        "email or WhatsApp us on +27 72 182 9894.\n\n"
+        "Phenyo Move & Meal\nhttps://www.movenmeal.com"
+    )
+    try:
+        send_mail(quote.email, f"We received your quote request (#{quote.id})", body)
+        log.info("Sent confirmation for quote request %s to the customer", quote.id)
+    except Exception as error:  # noqa: BLE001 - any email failure is logged, never raised
+        log.error("Could not send confirmation for quote request %s: %s", quote.id, error)
 
 
 @app.post("/quote-requests", response_model=QuoteRequestOut, status_code=201)
