@@ -14,18 +14,18 @@ The idea in one paragraph:
   funerals, parties) need a price first, so customers send a QUOTE REQUEST.
   You price it yourself and move it through: new -> quoted -> accepted/declined.
 
-Endpoints:
+Endpoints (* = operator only, needs the X-API-Key header):
   GET  /health                      "Am I alive?" + which version is running
-  POST /trips                       operator creates a shared trip
+* POST /trips                       operator creates a shared trip
   GET  /trips                       list trips, with seats left
   GET  /trips/{id}                  one trip
   POST /trips/{id}/bookings         customer books seats (no overbooking)
-  GET  /trips/{id}/bookings         operator sees who booked
+* GET  /trips/{id}/bookings         operator sees who booked
   POST /bookings/{id}/cancel        free cancellation
   POST /quote-requests              customer asks for a quote
-  GET  /quote-requests              operator sees requests (?status=new)
-  GET  /quote-requests/{id}         one request
-  POST /quote-requests/{id}/status  operator moves a request to its next status
+* GET  /quote-requests              operator sees requests (?status=new)
+* GET  /quote-requests/{id}         one request
+* POST /quote-requests/{id}/status  operator moves a request to its next status
 
 Where the data lives:
   DATABASE_URL environment variable. Not set -> local SQLite file shuttle.db.
@@ -34,9 +34,11 @@ Where the data lives:
 
 import enum
 import os
+import secrets
 from datetime import UTC, datetime
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Security
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import (
     DateTime,
@@ -56,6 +58,9 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 # ---------------------------------------------------------------------------
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./shuttle.db")
 APP_VERSION = os.getenv("APP_VERSION", "dev")
+
+# The operator's key. Not set = every operator endpoint is locked ("fail closed").
+OPERATOR_API_KEY = os.getenv("OPERATOR_API_KEY", "")
 
 # The H1 has 9 seats; one is the driver's. This is a business rule, so it
 # lives in ONE named place instead of the number 8 scattered through the code.
@@ -342,6 +347,22 @@ def lock_trip(session: Session, trip_id: int) -> Trip:
 # ---------------------------------------------------------------------------
 app = FastAPI(title="Shuttle Booking API", version=APP_VERSION)
 
+# Adds an "Authorize" button to /docs where you paste the key.
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+
+def require_operator(api_key: str | None = Security(api_key_header)) -> None:
+    """Allow the request only if it carries the operator's key."""
+    # compare_digest takes the same time whether the first or last character is
+    # wrong, so an attacker can't guess the key one character at a time.
+    if not (
+        OPERATOR_API_KEY and api_key and secrets.compare_digest(api_key, OPERATOR_API_KEY)
+    ):
+        raise HTTPException(status_code=401, detail="Operator API key required")
+
+
+OPERATOR_ONLY = [Depends(require_operator)]
+
 # ---------------------------------------------------------------------------
 # 7. Endpoints
 #    "with Session(engine) as session, session.begin():" opens ONE transaction:
@@ -353,7 +374,7 @@ def health():
     return {"status": "ok", "version": APP_VERSION}
 
 
-@app.post("/trips", response_model=TripOut, status_code=201)
+@app.post("/trips", response_model=TripOut, status_code=201, dependencies=OPERATOR_ONLY)
 def create_trip(trip_in: TripIn):
     with Session(engine) as session, session.begin():
         trip = Trip(**trip_in.model_dump(), trip_type=TripType.shared)
@@ -407,7 +428,9 @@ def create_booking(trip_id: int, booking_in: BookingIn):
         return BookingOut.model_validate(booking, from_attributes=True)
 
 
-@app.get("/trips/{trip_id}/bookings", response_model=list[BookingOut])
+@app.get(
+    "/trips/{trip_id}/bookings", response_model=list[BookingOut], dependencies=OPERATOR_ONLY
+)
 def list_bookings(trip_id: int):
     with Session(engine) as session:
         if session.get(Trip, trip_id) is None:
@@ -457,7 +480,7 @@ def create_quote_request(quote_in: QuoteRequestIn):
         return quote_out(quote)
 
 
-@app.get("/quote-requests", response_model=list[QuoteRequestOut])
+@app.get("/quote-requests", response_model=list[QuoteRequestOut], dependencies=OPERATOR_ONLY)
 def list_quote_requests(status: QuoteStatus | None = None):
     with Session(engine) as session:
         query = select(QuoteRequest).order_by(QuoteRequest.created_at)
@@ -466,7 +489,9 @@ def list_quote_requests(status: QuoteStatus | None = None):
         return [quote_out(q) for q in session.scalars(query).all()]
 
 
-@app.get("/quote-requests/{quote_id}", response_model=QuoteRequestOut)
+@app.get(
+    "/quote-requests/{quote_id}", response_model=QuoteRequestOut, dependencies=OPERATOR_ONLY
+)
 def get_quote_request(quote_id: int):
     with Session(engine) as session:
         quote = session.get(QuoteRequest, quote_id)
@@ -475,7 +500,11 @@ def get_quote_request(quote_id: int):
         return quote_out(quote)
 
 
-@app.post("/quote-requests/{quote_id}/status", response_model=QuoteRequestOut)
+@app.post(
+    "/quote-requests/{quote_id}/status",
+    response_model=QuoteRequestOut,
+    dependencies=OPERATOR_ONLY,
+)
 def change_quote_status(quote_id: int, change: QuoteStatusIn):
     with Session(engine) as session, session.begin():
         quote = session.get(QuoteRequest, quote_id)

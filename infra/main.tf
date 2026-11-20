@@ -85,6 +85,14 @@ resource "azurerm_container_app_environment" "main" {
 }
 
 # --- The API -----------------------------------------------------------------
+# The operator's API key for the protected endpoints. Letters and digits only,
+# so it's easy to paste into /docs. Kept in Terraform state - which lives in
+# your private storage account, read with Entra auth.
+resource "random_password" "operator_api_key" {
+  length  = 40
+  special = false
+}
+
 resource "azurerm_container_app" "api" {
   name                         = "ca-${local.name}-api"
   resource_group_name          = azurerm_resource_group.main.name
@@ -97,6 +105,12 @@ resource "azurerm_container_app" "api" {
   identity {
     type         = "UserAssigned"
     identity_ids = [azurerm_user_assigned_identity.app.id]
+  }
+
+  # Stored encrypted by Container Apps; the container only sees it as an env var
+  secret {
+    name  = "operator-api-key"
+    value = random_password.operator_api_key.result
   }
 
   # Pull from ACR using the identity above - no username/password stored
@@ -137,6 +151,11 @@ resource "azurerm_container_app" "api" {
       env {
         name  = "AZURE_CLIENT_ID"
         value = azurerm_user_assigned_identity.app.client_id
+      }
+
+      env {
+        name        = "OPERATOR_API_KEY"
+        secret_name = "operator-api-key"
       }
 
       # Same /health endpoint your Dockerfile HEALTHCHECK uses

@@ -29,6 +29,8 @@ services:
     environment:
       # "db" is the service name above - Docker's network turns it into a hostname
       DATABASE_URL: postgresql+psycopg://shuttle:${POSTGRES_PASSWORD:-localdevpassword}@db:5432/shuttle
+      # Local-only operator key for /docs "Authorize". Azure gets a random one from Terraform.
+      OPERATOR_API_KEY: ${OPERATOR_API_KEY:-local-dev-key}
     depends_on:
       db:
         # Don't start the API until the db healthcheck passes (not just "started")
