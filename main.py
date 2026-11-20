@@ -30,7 +30,17 @@ from datetime import UTC, datetime
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String, create_engine, func, select
+from sqlalchemy import (
+    DateTime,
+    Enum,
+    ForeignKey,
+    Integer,
+    String,
+    create_engine,
+    event,
+    func,
+    select,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
 # ---------------------------------------------------------------------------
@@ -43,7 +53,25 @@ APP_VERSION = os.getenv("APP_VERSION", "dev")
 # lives in ONE named place instead of the number 8 scattered through the code.
 H1_PASSENGER_SEATS = 8
 
-engine = create_engine(DATABASE_URL)
+# How to log in to the database:
+#   "password" (default): the username/password inside DATABASE_URL, used on
+#                         your laptop, in Docker, and in tests
+#   "entra"   (Azure):    no password; get a short-lived Entra token instead
+DATABASE_AUTH = os.getenv("DATABASE_AUTH", "password")
+ENTRA_DB_SCOPE = "https://ossrdbms-aad.database.windows.net/.default"
+
+engine = create_engine(DATABASE_URL, pool_pre_ping=True, pool_recycle=1800)
+
+if DATABASE_AUTH == "entra":
+    from azure.identity import DefaultAzureCredential
+
+    credential = DefaultAzureCredential()
+
+    # Runs every time SQLAlchemy opens a NEW connection to the database:
+    # fetch a fresh token and hand it over as the password.
+    @event.listens_for(engine, "do_connect")
+    def provide_entra_token(dialect, conn_rec, cargs, cparams):
+        cparams["password"] = credential.get_token(ENTRA_DB_SCOPE).token
 
 
 # ---------------------------------------------------------------------------

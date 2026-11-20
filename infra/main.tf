@@ -154,8 +154,8 @@ resource "azurerm_container_app" "api" {
   # var.container_image.
   lifecycle {
     ignore_changes = [template[0].container[0].image,
-                      registry[0].identity,
-                      ]
+      registry[0].identity,
+    ]
   }
 
   # Make sure the pull permission exists before the app tries to use it
