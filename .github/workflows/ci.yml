@@ -33,6 +33,9 @@ jobs:
       - name: Run tests (pytest)
         run: pytest
 
+      - name: Check migrations match models
+        run: alembic check | alemic upgrade head
+
   # Build the image (and push it, but only from main)
   # ===========================================================================
   build:
