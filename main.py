@@ -163,6 +163,7 @@ class QuoteStatus(str, enum.Enum):
     quoted = "quoted"      # you sent the customer a price
     accepted = "accepted"  # customer said yes
     declined = "declined"  # customer said no, or you can't do it
+    completed = "completed"  # the trip happened - customer is asked for a review
 
 
 # Which status changes are allowed. Anything not listed is refused with 409.
@@ -171,8 +172,9 @@ class QuoteStatus(str, enum.Enum):
 QUOTE_TRANSITIONS: dict[QuoteStatus, set[QuoteStatus]] = {
     QuoteStatus.new: {QuoteStatus.quoted, QuoteStatus.declined},
     QuoteStatus.quoted: {QuoteStatus.accepted, QuoteStatus.declined},
-    QuoteStatus.accepted: set(),  # final
+    QuoteStatus.accepted: {QuoteStatus.completed, QuoteStatus.declined},
     QuoteStatus.declined: set(),  # final
+    QuoteStatus.completed: set(),  # final
 }
 
 
@@ -664,6 +666,23 @@ def send_quote_email(quote: QuoteRequestOut) -> None:
         log.error("Could not send confirmation for quote request %s: %s", quote.id, error)
 
 
+def send_review_request(quote: QuoteRequestOut) -> None:
+    """After a completed trip, thank the customer and ask for a Google review."""
+    if not NOTIFY_EMAIL or not quote.email:
+        return
+    try:
+        send_mail(
+            quote.email,
+            f"Thank you for travelling with {emails.COMPANY}",
+            emails.review_request(
+                quote.contact_name.split()[0], quote.id, SERVICE_LABELS[quote.request_type]
+            ),
+        )
+        log.info("Sent review request for quote request %s", quote.id)
+    except Exception as error:  # noqa: BLE001 - any email failure is logged, never raised
+        log.error("Could not send review request for quote request %s: %s", quote.id, error)
+
+
 @app.post("/quote-requests", response_model=QuoteRequestOut, status_code=201)
 def create_quote_request(
     quote_in: QuoteRequestIn, request: Request, background_tasks: BackgroundTasks
@@ -708,7 +727,9 @@ def get_quote_request(quote_id: int):
     response_model=QuoteRequestOut,
     dependencies=OPERATOR_ONLY,
 )
-def change_quote_status(quote_id: int, change: QuoteStatusIn):
+def change_quote_status(
+    quote_id: int, change: QuoteStatusIn, background_tasks: BackgroundTasks
+):
     with Session(engine) as session, session.begin():
         quote = session.get(QuoteRequest, quote_id)
         if quote is None:
@@ -721,4 +742,8 @@ def change_quote_status(quote_id: int, change: QuoteStatusIn):
             )
         quote.status = change.status
         session.flush()
-        return quote_out(quote)
+        result = quote_out(quote)
+    # Trip done: thank the customer and ask for a review (after the response is sent).
+    if result.status == QuoteStatus.completed:
+        background_tasks.add_task(send_review_request, result)
+    return result
