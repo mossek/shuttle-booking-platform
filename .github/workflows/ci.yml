@@ -200,7 +200,7 @@ jobs:
           --query properties.configuration.ingress.fqdn -o tsv)
           echo "Waiting for the new version to be live at https://${FQDN}..." 
           for i in $(seq 1 12); do
-            VERSION=$(curl -s "https://${FQDN}/health" | jq -r .version)
+            VERSION=$(curl -s --max-time 10 "https://${FQDN}/health" | jq -r .version 2>/dev/null || echo "unreachable")
             if [ "$VERSION" = "$GITHUB_SHA" ]; then
               echo "Deployed and live: $VERSION"
               exit 0
