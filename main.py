@@ -26,8 +26,7 @@ Where the data lives:
 
 import enum
 import os
-from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
@@ -106,7 +105,7 @@ class Booking(Base):
         Enum(BookingStatus), default=BookingStatus.active
     )
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None)
+        DateTime, default=lambda: datetime.now(UTC).replace(tzinfo=None)
     )
 
 
@@ -203,19 +202,12 @@ def lock_trip(session: Session, trip_id: int) -> Trip:
 
 
 # ---------------------------------------------------------------------------
-# 6. Startup - create tables that don't exist yet.
+# 6. Startup - Tables are created by Alembic migrations (see migrations/README.md)
 #    NOTE: create_all never CHANGES an existing table. Step 3 replaces this
 #    with Alembic migrations.
 # ---------------------------------------------------------------------------
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    Base.metadata.create_all(engine)
-    yield
 
-
-app = FastAPI(title="Shuttle Booking API", version=APP_VERSION, lifespan=lifespan)
-
-
+app = FastAPI(title="Shuttle Booking API", version=APP_VERSION)
 # ---------------------------------------------------------------------------
 # 7. Endpoints
 #    "with Session(engine) as session, session.begin():" opens ONE transaction:

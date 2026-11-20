@@ -30,6 +30,7 @@ from main import Base, app, engine
 def client():
     """Fresh, empty database for every test + a fake browser (TestClient)."""
     Base.metadata.drop_all(engine)
+    Base.metadata.create_all(engine)
     with TestClient(app) as c:
         yield c
 
