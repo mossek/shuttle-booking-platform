@@ -36,7 +36,8 @@ RUN useradd --create-home --uid 10001 appuser \
 
 # Take ONLY the finished packages from the builder stage
 COPY --from=builder /opt/venv /opt/venv
-COPY main.py .
+COPY main.py emails.py ./
+COPY static ./static
 COPY alembic.ini .
 COPY migrations ./migrations
 

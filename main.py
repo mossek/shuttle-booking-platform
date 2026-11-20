@@ -60,6 +60,8 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
+import emails
+
 # ---------------------------------------------------------------------------
 # 1. Configuration - from environment variables, with safe defaults
 # ---------------------------------------------------------------------------
@@ -569,8 +571,8 @@ SERVICE_LABELS = {
 }
 
 
-def send_mail(to: str, subject: str, body: str, reply_to: str | None = None) -> None:
-    """Send a plain-text email FROM the NOTIFY_EMAIL mailbox via Microsoft Graph.
+def send_mail(to: str, subject: str, html: str, reply_to: str | None = None) -> None:
+    """Send a branded HTML email FROM the NOTIFY_EMAIL mailbox via Microsoft Graph.
 
     The app logs in with its managed identity. Exchange only lets it send as
     NOTIFY_EMAIL (the "Shuttle sales mailbox" scope), to any recipient.
@@ -580,8 +582,9 @@ def send_mail(to: str, subject: str, body: str, reply_to: str | None = None) -> 
     token = DefaultAzureCredential().get_token("https://graph.microsoft.com/.default").token
     message = {
         "subject": subject,
-        "body": {"contentType": "Text", "content": body},
+        "body": {"contentType": "HTML", "content": html},
         "toRecipients": [{"emailAddress": {"address": to}}],
+        "attachments": [emails.logo_attachment()],
     }
     if reply_to:
         message["replyTo"] = [{"emailAddress": {"address": reply_to}}]
@@ -599,13 +602,20 @@ def send_mail(to: str, subject: str, body: str, reply_to: str | None = None) -> 
         raise RuntimeError(f"Graph returned {error.code}: {detail}") from None
 
 
-def describe_trip(quote: QuoteRequestOut) -> str:
-    when = f" on {quote.travel_date:%d %b %Y at %H:%M}" if quote.travel_date else ""
-    back = " (with a return trip)" if quote.return_trip else ""
-    return (
-        f"{SERVICE_LABELS[quote.request_type]} from {quote.pickup} to {quote.dropoff}"
-        f"{when} for {quote.passengers} passenger(s){back}"
-    )
+def trip_rows(quote: QuoteRequestOut) -> list[tuple[str, str]]:
+    """The request as label/value pairs for the email summary table."""
+    when = f"{quote.travel_date:%a %d %b %Y, %H:%M}" if quote.travel_date else ""
+    return [
+        ("Service", SERVICE_LABELS[quote.request_type].capitalize()),
+        ("Company", quote.company_name or ""),
+        ("Shifts", quote.shift_details or ""),
+        ("Pick-up", quote.pickup),
+        ("Drop-off", quote.dropoff),
+        ("Date and time", when),
+        ("Return trip", "Yes" if quote.return_trip else ""),
+        ("Passengers", str(quote.passengers)),
+        ("Notes", quote.notes or ""),
+    ]
 
 
 def send_quote_email(quote: QuoteRequestOut) -> None:
@@ -616,19 +626,21 @@ def send_quote_email(quote: QuoteRequestOut) -> None:
     """
     if not NOTIFY_EMAIL:
         return
+    service = SERVICE_LABELS[quote.request_type]
+    rows = trip_rows(quote)
 
     # 1. To you (sales@). "Reply" goes straight to the customer if they gave an email.
-    lines = [
-        f"{field}: {value}"
-        for field, value in quote.model_dump(mode="json").items()
-        if value not in (None, "")
-    ]
+    contact_rows = [("Name", quote.contact_name), ("Phone", quote.phone),
+                    ("Email", quote.email or "")]
     try:
         send_mail(
             NOTIFY_EMAIL,
             f"New quote request #{quote.id}: {quote.request_type.value} "
             f"({quote.passengers} passengers)",
-            "\n".join(lines),
+            emails.sales_notification(
+                quote.id, service, quote.contact_name, quote.phone,
+                contact_rows + rows, customer_emailed=bool(quote.email),
+            ),
             reply_to=quote.email,
         )
         log.info("Emailed quote request %s to %s", quote.id, NOTIFY_EMAIL)
@@ -639,17 +651,14 @@ def send_quote_email(quote: QuoteRequestOut) -> None:
     # 2. To the customer, only if they gave an email address.
     if not quote.email:
         return
-    first_name = quote.contact_name.split()[0]
-    body = (
-        f"Hi {first_name},\n\n"
-        f"Thank you for contacting Phenyo Move & Meal. We've received your request "
-        f"(reference #{quote.id}) for {describe_trip(quote)}.\n\n"
-        "We'll send you a quote within 24 hours. Need to add something? Reply to this "
-        "email or WhatsApp us on +27 72 182 9894.\n\n"
-        "Phenyo Move & Meal\nhttps://www.movenmeal.com"
-    )
     try:
-        send_mail(quote.email, f"We received your quote request (#{quote.id})", body)
+        send_mail(
+            quote.email,
+            f"We've received your request (#{quote.id}) - {emails.COMPANY}",
+            emails.customer_confirmation(
+                quote.contact_name.split()[0], quote.id, service, rows
+            ),
+        )
         log.info("Sent confirmation for quote request %s to the customer", quote.id)
     except Exception as error:  # noqa: BLE001 - any email failure is logged, never raised
         log.error("Could not send confirmation for quote request %s: %s", quote.id, error)
