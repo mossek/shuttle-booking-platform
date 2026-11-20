@@ -19,6 +19,7 @@ import os
 
 # Point the app at a throwaway test database BEFORE importing it.
 os.environ["DATABASE_URL"] = "sqlite:///./test_shuttle.db"
+os.environ["OPERATOR_API_KEY"] = "test-operator-key"
 
 import pytest
 from fastapi.testclient import TestClient
@@ -28,9 +29,17 @@ from main import Base, app, engine
 
 @pytest.fixture
 def client():
-    """Fresh, empty database for every test + a fake browser (TestClient)."""
+    """Fresh, empty database for every test + a fake browser (TestClient)
+    that sends the operator's key on every request."""
     Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
+    with TestClient(app, headers={"X-API-Key": "test-operator-key"}) as c:
+        yield c
+
+
+@pytest.fixture
+def public(client):
+    """A customer's browser: same app and database, but NO operator key."""
     with TestClient(app) as c:
         yield c
 
@@ -270,3 +279,38 @@ def test_missing_quote_request_returns_404(client):
     assert client.get("/quote-requests/999").status_code == 404
     missing = client.post("/quote-requests/999/status", json={"status": "quoted"})
     assert missing.status_code == 404
+
+
+# --- Operator-only endpoints -------------------------------------------------
+
+OPERATOR_ENDPOINTS = [
+    ("post", "/trips"),
+    ("get", "/trips/1/bookings"),
+    ("get", "/quote-requests"),
+    ("get", "/quote-requests/1"),
+    ("post", "/quote-requests/1/status"),
+]
+
+
+@pytest.mark.parametrize("method,path", OPERATOR_ENDPOINTS)
+def test_operator_endpoints_refuse_requests_without_a_key(public, method, path):
+    response = getattr(public, method)(path)
+    assert response.status_code == 401
+
+
+@pytest.mark.parametrize("method,path", OPERATOR_ENDPOINTS)
+def test_operator_endpoints_refuse_a_wrong_key(public, method, path):
+    response = getattr(public, method)(path, headers={"X-API-Key": "guess"})
+    assert response.status_code == 401
+
+
+def test_customers_can_book_and_cancel_without_a_key(public, trip_id):
+    assert public.get("/trips").status_code == 200
+    made = public.post(f"/trips/{trip_id}/bookings", json=booking(2))
+    assert made.status_code == 201
+    cancel = public.post(f"/bookings/{made.json()['id']}/cancel")
+    assert cancel.status_code == 200
+
+
+def test_customers_can_send_a_quote_request_without_a_key(public):
+    assert public.post("/quote-requests", json=WEDDING).status_code == 201

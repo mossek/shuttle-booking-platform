@@ -24,3 +24,9 @@ output "postgres_host" {
   description = "Hostname the app connects to"
   value       = azurerm_postgresql_flexible_server.main.fqdn
 }
+
+output "operator_api_key" {
+  description = "Paste into /docs -> Authorize. Read with: terraform output -raw operator_api_key"
+  value       = random_password.operator_api_key.result
+  sensitive   = true
+}
