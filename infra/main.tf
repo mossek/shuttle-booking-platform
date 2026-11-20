@@ -158,6 +158,16 @@ resource "azurerm_container_app" "api" {
         secret_name = "operator-api-key"
       }
 
+      env {
+        name  = "ALLOWED_ORIGINS"
+        value = join(",", var.website_origins)
+      }
+
+      env {
+        name  = "NOTIFY_EMAIL"
+        value = var.notify_email
+      }
+
       # Same /health endpoint your Dockerfile HEALTHCHECK uses
       liveness_probe {
         transport = "HTTP"

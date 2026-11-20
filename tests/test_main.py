@@ -20,10 +20,12 @@ import os
 # Point the app at a throwaway test database BEFORE importing it.
 os.environ["DATABASE_URL"] = "sqlite:///./test_shuttle.db"
 os.environ["OPERATOR_API_KEY"] = "test-operator-key"
+os.environ["ALLOWED_ORIGINS"] = "https://www.movenmeal.com"
 
 import pytest
 from fastapi.testclient import TestClient
 
+import main
 from main import Base, app, engine
 
 
@@ -33,6 +35,7 @@ def client():
     that sends the operator's key on every request."""
     Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
+    main.recent_requests.clear()  # every test starts with a clean rate limit
     with TestClient(app, headers={"X-API-Key": "test-operator-key"}) as c:
         yield c
 
@@ -196,6 +199,7 @@ WEDDING = {
     "travel_date": "2026-12-12T09:00:00",
     "return_trip": True,
     "passengers": 20,
+    "consent": True,
 }
 
 SHUTTLE_CONTRACT = {
@@ -207,6 +211,7 @@ SHUTTLE_CONTRACT = {
     "dropoff": "Randburg",
     "shift_details": "Mon-Fri, 06:00 and 18:00 shifts",
     "passengers": 12,
+    "consent": True,
 }
 
 
@@ -314,3 +319,79 @@ def test_customers_can_book_and_cancel_without_a_key(public, trip_id):
 
 def test_customers_can_send_a_quote_request_without_a_key(public):
     assert public.post("/quote-requests", json=WEDDING).status_code == 201
+
+
+# --- Website quote form: new types, consent, spam protection, email -----------
+
+AIRPORT = {
+    "request_type": "airport_transfer",
+    "contact_name": "Lerato K",
+    "phone": "0821234567",
+    "pickup": "Cosmo City",
+    "dropoff": "OR Tambo Airport",
+    "travel_date": "2026-12-20T05:00:00",
+    "passengers": 3,
+    "consent": True,
+}
+
+
+def test_airport_transfer_request_is_accepted(public):
+    response = public.post("/quote-requests", json=AIRPORT)
+    assert response.status_code == 201
+    assert response.json()["consent_given_at"] is not None
+
+
+def test_airport_transfer_needs_a_date(public):
+    no_date = {k: v for k, v in AIRPORT.items() if k != "travel_date"}
+    assert public.post("/quote-requests", json=no_date).status_code == 422
+
+
+def test_other_request_does_not_need_a_date(public):
+    other = {k: v for k, v in AIRPORT.items() if k != "travel_date"}
+    other["request_type"] = "other"
+    assert public.post("/quote-requests", json=other).status_code == 201
+
+
+def test_request_without_consent_is_rejected(public):
+    assert public.post("/quote-requests", json={**AIRPORT, "consent": False}).status_code == 422
+    no_field = {k: v for k, v in AIRPORT.items() if k != "consent"}
+    assert public.post("/quote-requests", json=no_field).status_code == 422
+
+
+def test_spam_trap_filled_in_is_rejected_and_not_saved(client, public):
+    response = public.post("/quote-requests", json={**AIRPORT, "website": "http://spam"})
+    assert response.status_code == 400
+    assert client.get("/quote-requests").json() == []
+
+
+def test_sixth_request_in_ten_minutes_is_rate_limited(public):
+    for _ in range(5):
+        assert public.post("/quote-requests", json=AIRPORT).status_code == 201
+    assert public.post("/quote-requests", json=AIRPORT).status_code == 429
+
+
+def test_website_is_allowed_by_cors(public):
+    response = public.options(
+        "/quote-requests",
+        headers={
+            "Origin": "https://www.movenmeal.com",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "Content-Type",
+        },
+    )
+    assert response.headers["access-control-allow-origin"] == "https://www.movenmeal.com"
+
+
+def test_other_websites_are_not_allowed_by_cors(public):
+    response = public.options(
+        "/quote-requests",
+        headers={"Origin": "https://evil.example", "Access-Control-Request-Method": "POST"},
+    )
+    assert "access-control-allow-origin" not in response.headers
+
+
+def test_new_quote_request_triggers_an_email(public, monkeypatch):
+    sent = []
+    monkeypatch.setattr(main, "send_quote_email", lambda quote: sent.append(quote))
+    quote_id = public.post("/quote-requests", json=AIRPORT).json()["id"]
+    assert [q.id for q in sent] == [quote_id]
