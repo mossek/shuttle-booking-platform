@@ -33,11 +33,17 @@ Where the data lives:
 """
 
 import enum
+import json
+import logging
 import os
 import secrets
+import time
+import urllib.request
+from collections import defaultdict, deque
 from datetime import UTC, datetime
 
-from fastapi import Depends, FastAPI, HTTPException, Security
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, Security
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import (
@@ -61,6 +67,15 @@ APP_VERSION = os.getenv("APP_VERSION", "dev")
 
 # The operator's key. Not set = every operator endpoint is locked ("fail closed").
 OPERATOR_API_KEY = os.getenv("OPERATOR_API_KEY", "")
+
+# Websites allowed to call this API from a browser (comma-separated), e.g.
+# "https://www.movenmeal.com,https://movenmeal.com". Empty = none.
+ALLOWED_ORIGINS = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()]
+
+# Where new quote requests are emailed (a Microsoft 365 mailbox). Empty = no email.
+NOTIFY_EMAIL = os.getenv("NOTIFY_EMAIL", "")
+
+log = logging.getLogger("shuttle")
 
 # The H1 has 9 seats; one is the driver's. This is a business rule, so it
 # lives in ONE named place instead of the number 8 scattered through the code.
@@ -114,6 +129,20 @@ class RequestType(str, enum.Enum):
     wedding = "wedding"
     funeral = "funeral"
     party = "party"
+    airport_transfer = "airport_transfer"  # OR Tambo / Lanseria
+    private_hire = "private_hire"
+    other = "other"
+
+
+# These need a date. A shuttle contract has shifts instead; "other" is open-ended.
+DATED_REQUEST_TYPES = {
+    RequestType.tourism,
+    RequestType.wedding,
+    RequestType.funeral,
+    RequestType.party,
+    RequestType.airport_transfer,
+    RequestType.private_hire,
+}
 
 
 class QuoteStatus(str, enum.Enum):
@@ -198,6 +227,9 @@ class QuoteRequest(Base):
     passengers: Mapped[int] = mapped_column(Integer)
     notes: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     status: Mapped[QuoteStatus] = mapped_column(Enum(QuoteStatus), default=QuoteStatus.new)
+    # POPIA: when the customer agreed to us storing their details. Empty for
+    # requests made before the consent checkbox existed.
+    consent_given_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=lambda: datetime.now(UTC).replace(tzinfo=None)
     )
@@ -270,16 +302,24 @@ class QuoteRequestIn(QuoteRequestFields):
     """What a customer sends. Only NEW requests are checked against these rules,
     so changing a rule later never makes old rows unreadable."""
 
+    # POPIA: the customer must tick "I agree" before we store their details.
+    consent: bool = Field(examples=[True])
+    # Spam trap: a field hidden on the website. People never see it, so they
+    # leave it empty; simple bots fill in every field they find.
+    website: str = Field(default="", max_length=200)
+
     @model_validator(mode="after")
     def check_details_for_request_type(self):
         """Rules that depend on more than one field (so Field() can't do them)."""
+        if not self.consent:
+            raise ValueError("consent is required to process your request")
         if self.request_type == RequestType.shuttle_contract:
             if not self.company_name:
                 raise ValueError("company_name is required for a shuttle contract")
             if not self.shift_details:
                 raise ValueError("shift_details is required for a shuttle contract")
-        elif self.travel_date is None:
-            raise ValueError("travel_date is required for group hire")
+        elif self.request_type in DATED_REQUEST_TYPES and self.travel_date is None:
+            raise ValueError("travel_date is required for this type of trip")
         return self
 
 
@@ -287,6 +327,7 @@ class QuoteRequestOut(QuoteRequestFields):
     id: int
     status: QuoteStatus
     created_at: datetime
+    consent_given_at: datetime | None
 
 
 class QuoteStatusIn(BaseModel):
@@ -346,6 +387,15 @@ def lock_trip(session: Session, trip_id: int) -> Trip:
 #    (migrations/versions/), which the container runs before it starts.
 # ---------------------------------------------------------------------------
 app = FastAPI(title="Shuttle Booking API", version=APP_VERSION)
+
+# CORS: browsers only let movenmeal.com call this API if the API says it may.
+# Only the customer endpoints need it; the operator key is never sent from a browser.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
+)
 
 # Adds an "Authorize" button to /docs where you paste the key.
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
@@ -471,13 +521,84 @@ def quote_out(quote: QuoteRequest) -> QuoteRequestOut:
     return QuoteRequestOut.model_validate(quote, from_attributes=True)
 
 
+# Rate limit: at most 5 quote requests per visitor (IP address) per 10 minutes.
+# Kept in memory, which is fine with one replica (max_replicas = 1).
+RATE_LIMIT, RATE_WINDOW_SECONDS = 5, 600
+recent_requests: dict[str, deque[float]] = defaultdict(deque)
+
+
+def client_ip(request: Request) -> str:
+    # Behind Container Apps' ingress, the visitor's address is the first entry
+    # in X-Forwarded-For; request.client is the ingress itself.
+    forwarded = request.headers.get("x-forwarded-for", "")
+    return forwarded.split(",")[0].strip() or (request.client.host if request.client else "")
+
+
+def check_rate_limit(ip: str) -> None:
+    now = time.monotonic()
+    times = recent_requests[ip]
+    while times and now - times[0] > RATE_WINDOW_SECONDS:
+        times.popleft()
+    if len(times) >= RATE_LIMIT:
+        raise HTTPException(status_code=429, detail="Too many requests, try again later")
+    times.append(now)
+
+
+def send_quote_email(quote: QuoteRequestOut) -> None:
+    """Email the new request to NOTIFY_EMAIL via Microsoft Graph.
+
+    Runs AFTER the response is sent (a background task), so a slow or failing
+    email never stops the customer's request from being saved.
+    """
+    if not NOTIFY_EMAIL:
+        return
+    try:
+        from azure.identity import DefaultAzureCredential
+
+        token = DefaultAzureCredential().get_token("https://graph.microsoft.com/.default").token
+        lines = [
+            f"{field}: {value}"
+            for field, value in quote.model_dump(mode="json").items()
+            if value not in (None, "")
+        ]
+        message = {
+            "message": {
+                "subject": f"New quote request #{quote.id}: {quote.request_type.value} "
+                f"({quote.passengers} passengers)",
+                "body": {"contentType": "Text", "content": "\n".join(lines)},
+                "toRecipients": [{"emailAddress": {"address": NOTIFY_EMAIL}}],
+            },
+            "saveToSentItems": False,
+        }
+        graph_request = urllib.request.Request(
+            f"https://graph.microsoft.com/v1.0/users/{NOTIFY_EMAIL}/sendMail",
+            data=json.dumps(message).encode(),
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            method="POST",
+        )
+        urllib.request.urlopen(graph_request, timeout=15)
+    except Exception:
+        # Never lose the request over an email problem - it's saved either way.
+        log.exception("Could not email quote request %s", quote.id)
+
+
 @app.post("/quote-requests", response_model=QuoteRequestOut, status_code=201)
-def create_quote_request(quote_in: QuoteRequestIn):
+def create_quote_request(
+    quote_in: QuoteRequestIn, request: Request, background_tasks: BackgroundTasks
+):
+    if quote_in.website:
+        raise HTTPException(status_code=400, detail="Invalid request")
+    check_rate_limit(client_ip(request))
     with Session(engine) as session, session.begin():
-        quote = QuoteRequest(**quote_in.model_dump())
+        quote = QuoteRequest(
+            **quote_in.model_dump(exclude={"consent", "website"}),
+            consent_given_at=datetime.now(UTC).replace(tzinfo=None),
+        )
         session.add(quote)
         session.flush()
-        return quote_out(quote)
+        result = quote_out(quote)
+    background_tasks.add_task(send_quote_email, result)
+    return result
 
 
 @app.get("/quote-requests", response_model=list[QuoteRequestOut], dependencies=OPERATOR_ONLY)

@@ -31,6 +31,8 @@ services:
       DATABASE_URL: postgresql+psycopg://shuttle:${POSTGRES_PASSWORD:-localdevpassword}@db:5432/shuttle
       # Local-only operator key for /docs "Authorize". Azure gets a random one from Terraform.
       OPERATOR_API_KEY: ${OPERATOR_API_KEY:-local-dev-key}
+      # Lets the website on your laptop (npm run dev) call this API
+      ALLOWED_ORIGINS: http://localhost:8080
     depends_on:
       db:
         # Don't start the API until the db healthcheck passes (not just "started")

@@ -31,3 +31,18 @@ variable "github_deployer_name" {
   type        = string
   default     = "github-shuttle-deploy"
 }
+variable "website_origins" {
+  description = "Websites allowed to call the API from a browser (CORS)"
+  type        = list(string)
+  default = [
+    "https://www.movenmeal.com",
+    "https://movenmeal.com",
+    "http://localhost:8080", # the website running on your laptop (npm run dev)
+  ]
+}
+
+variable "notify_email" {
+  description = "Microsoft 365 mailbox that receives new quote requests"
+  type        = string
+  default     = "sales@movenmeal.com"
+}
