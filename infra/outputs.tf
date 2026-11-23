@@ -30,3 +30,8 @@ output "operator_api_key" {
   value       = random_password.operator_api_key.result
   sensitive   = true
 }
+
+output "app_insights_name" {
+  description = "Application Insights resource: open it in the portal to see requests, failures and logs"
+  value       = azurerm_application_insights.main.name
+}

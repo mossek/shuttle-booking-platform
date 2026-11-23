@@ -46,3 +46,24 @@ variable "notify_email" {
   type        = string
   default     = "sales@movenmeal.com"
 }
+
+variable "alert_email" {
+  description = "Who gets the monitoring alert emails (API down, errors, restarts)"
+  type        = string
+  default     = "sales@movenmeal.com"
+}
+
+variable "health_check_seconds" {
+  description = <<-EOT
+    How often EACH of the 3 test locations calls /health/db: 300, 600 or 900.
+    More often = faster alerts, but the app rarely gets to scale to zero
+    (slightly higher Container Apps cost, faster website for customers).
+  EOT
+  type        = number
+  default     = 900
+
+  validation {
+    condition     = contains([300, 600, 900], var.health_check_seconds)
+    error_message = "health_check_seconds must be 300, 600 or 900."
+  }
+}

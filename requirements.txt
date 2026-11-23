@@ -6,3 +6,6 @@ sqlalchemy==2.1.8
 psycopg[binary]==3.3.9
 alembic==1.20.1
 azure-identity==1.27.0
+# Sends requests, errors and logs to Azure Application Insights (only when
+# APPLICATIONINSIGHTS_CONNECTION_STRING is set - i.e. in Azure, not on your laptop)
+azure-monitor-opentelemetry==1.8.12
