@@ -168,14 +168,31 @@ jobs:
           docker tag "${IMAGE}:${{ github.sha }}" "${ACR}:${{ github.sha }}"
           docker push "${ACR}:${{ github.sha }}"
 
+  # ===========================================================================
+  # Deploy with blue-green and automatic rollback.
+  #   blue  = the revision customers use right now
+  #   green = the new version
+  # Green starts with 0% of the traffic. It only gets customers after it
+  # passes its health check. If anything fails, traffic stays on (or goes
+  # back to) blue and the job turns red - customers never see a broken version.
+  # Portal: Container App -> Revisions and replicas (traffic % per revision).
+  # ===========================================================================
   deploy:
     name: Deploy
     needs: push
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    # Never run two deploys at once - they would fight over the traffic split
+    concurrency:
+      group: deploy-${{ vars.CONTAINER_APP }}
+      cancel-in-progress: false
     permissions:
       contents: read
       id-token: write
+    env:
+      APP: ${{ vars.CONTAINER_APP }}
+      RG: ${{ vars.RESOURCE_GROUP }}
+      IMAGE: ${{ needs.push.outputs.acr_name }}.azurecr.io/shuttle-booking-platform:${{ github.sha }}
     steps:
       - name: sign in to Azure (OIDC - no secrets)
         uses: azure/login@v3
@@ -184,29 +201,99 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Deploy the new image to Container Apps
+      - name: Pin all traffic to the current revision (blue)
         run: |
           az config set extension.use_dynamic_install=yes_without_prompt
-          az containerapp update \
-            --name "${{ vars.CONTAINER_APP }}" \
-            --resource-group "${{ vars.RESOURCE_GROUP }}" \
-            --image "${{ needs.push.outputs.acr_name }}.azurecr.io/shuttle-booking-platform:${{ github.sha }}"
+          # Blue = the revision that has customers right now
+          BLUE=$(az containerapp ingress traffic show -n "$APP" -g "$RG" \
+            --query "[?weight > \`0\` && revisionName != null].revisionName | [0]" -o tsv)
+          if [ -z "$BLUE" ]; then
+            # First run after the switch to Multiple: traffic says "latest revision"
+            BLUE=$(az containerapp show -n "$APP" -g "$RG" \
+              --query properties.latestReadyRevisionName -o tsv)
+          fi
+          # Pinning by NAME (not "latest") means a new revision gets 0% traffic
+          az containerapp ingress traffic set -n "$APP" -g "$RG" \
+            --revision-weight "$BLUE=100" -o none
+          echo "Blue (live) revision: $BLUE"
+          echo "BLUE=$BLUE" >> "$GITHUB_ENV"
 
-      - name: Verify the new version is live
+      - name: Start the new version (green) with no traffic
         run: |
-          FQDN=$(az containerapp show \
-          --name ${{ vars.CONTAINER_APP }} \
-          --resource-group ${{ vars.RESOURCE_GROUP }} \
-          --query properties.configuration.ingress.fqdn -o tsv)
-          echo "Waiting for the new version to be live at https://${FQDN}..." 
-          for i in $(seq 1 12); do
-            VERSION=$(curl -s --max-time 10 "https://${FQDN}/health" | jq -r .version 2>/dev/null || echo "unreachable")
-            if [ "$VERSION" = "$GITHUB_SHA" ]; then
-              echo "Deployed and live: $VERSION"
+          # Revision name = <app>--<suffix>. The run attempt keeps re-runs unique.
+          SUFFIX="v${GITHUB_SHA::7}-${GITHUB_RUN_ATTEMPT}"
+          GREEN="${APP}--${SUFFIX}"
+          echo "GREEN=$GREEN" >> "$GITHUB_ENV"
+          az containerapp update -n "$APP" -g "$RG" \
+            --image "$IMAGE" --revision-suffix "$SUFFIX" -o none
+          echo "Green revision: $GREEN (0% traffic)"
+
+      - name: Test green directly, before any customer sees it
+        run: |
+          # In Multiple revision mode every revision has its own private-ish URL
+          GREEN_FQDN=$(az containerapp revision show -n "$APP" -g "$RG" \
+            --revision "$GREEN" --query properties.fqdn -o tsv)
+          echo "Testing https://${GREEN_FQDN}/health/db"
+          for i in $(seq 1 30); do
+            BODY=$(curl -s --max-time 15 "https://${GREEN_FQDN}/health/db" || true)
+            VERSION=$(echo "$BODY" | jq -r .version 2>/dev/null || echo "unreachable")
+            DB=$(echo "$BODY" | jq -r .database 2>/dev/null || echo "unknown")
+            if [ "$VERSION" = "$GITHUB_SHA" ] && [ "$DB" = "ok" ]; then
+              echo "Green is healthy: version $VERSION, database $DB"
               exit 0
             fi
-            echo "Attempt $i: live version is '$VERSION' - waiting 10s..."
+            echo "Attempt $i/30: version '$VERSION', database '$DB' - waiting 10s..."
             sleep 10
           done
-          echo "FAILED: expected $GITHUB_SHA but the app is running '$VERSION'"
+          echo "Green never became healthy - customers stay on blue."
           exit 1
+
+      - name: Switch customers to green
+        run: |
+          az containerapp ingress traffic set -n "$APP" -g "$RG" \
+            --revision-weight "$GREEN=100" -o none
+          echo "100% of traffic now on $GREEN"
+
+      - name: Check the public URL serves green
+        run: |
+          FQDN=$(az containerapp show -n "$APP" -g "$RG" \
+            --query properties.configuration.ingress.fqdn -o tsv)
+          for i in $(seq 1 12); do
+            BODY=$(curl -s --max-time 15 "https://${FQDN}/health/db" || true)
+            VERSION=$(echo "$BODY" | jq -r .version 2>/dev/null || echo "unreachable")
+            DB=$(echo "$BODY" | jq -r .database 2>/dev/null || echo "unknown")
+            if [ "$VERSION" = "$GITHUB_SHA" ] && [ "$DB" = "ok" ]; then
+              echo "Live at https://${FQDN}: version $VERSION"
+              exit 0
+            fi
+            echo "Attempt $i/12: version '$VERSION', database '$DB' - waiting 10s..."
+            sleep 10
+          done
+          echo "Public URL is not healthy on green."
+          exit 1
+
+      # Runs ONLY if a step above failed: put customers back on blue
+      - name: Roll back to blue
+        if: failure() && env.BLUE != ''
+        run: |
+          echo "::error::Deploy failed - rolling back to $BLUE"
+          az containerapp ingress traffic set -n "$APP" -g "$RG" \
+            --revision-weight "$BLUE=100" -o none
+          if [ -n "${GREEN:-}" ]; then
+            az containerapp revision deactivate -n "$APP" -g "$RG" --revision "$GREEN" -o none || true
+            echo "Deactivated the failed revision $GREEN"
+          fi
+          echo "Customers are on $BLUE again."
+
+      # Success: keep blue (switched off traffic, scaled to zero) for a quick
+      # manual rollback; deactivate anything older so revisions don't pile up.
+      - name: Tidy up old revisions
+        if: success()
+        run: |
+          for REV in $(az containerapp revision list -n "$APP" -g "$RG" \
+              --query "[?properties.active].name" -o tsv); do
+            if [ "$REV" != "$GREEN" ] && [ "$REV" != "$BLUE" ]; then
+              az containerapp revision deactivate -n "$APP" -g "$RG" --revision "$REV" -o none
+              echo "Deactivated $REV"
+            fi
+          done
