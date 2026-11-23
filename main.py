@@ -57,6 +57,7 @@ from sqlalchemy import (
     event,
     func,
     select,
+    text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
@@ -89,6 +90,15 @@ if not log.handlers:
     _handler = logging.StreamHandler()
     _handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
     log.addHandler(_handler)
+
+# Monitoring. In Azure, Terraform sets APPLICATIONINSIGHTS_CONNECTION_STRING, and
+# then every request (URL, status code, how long it took), every crash, every call
+# to the database and Microsoft Graph, and our own "shuttle" log lines go to
+# Application Insights. On your laptop and in the tests it isn't set: nothing is sent.
+if os.getenv("APPLICATIONINSIGHTS_CONNECTION_STRING"):
+    from azure.monitor.opentelemetry import configure_azure_monitor
+
+    configure_azure_monitor(logger_name="shuttle")
 
 # The H1 has 9 seats; one is the driver's. This is a business rule, so it
 # lives in ONE named place instead of the number 8 scattered through the code.
@@ -405,6 +415,13 @@ def lock_trip(session: Session, trip_id: int) -> Trip:
 # ---------------------------------------------------------------------------
 app = FastAPI(title="Shuttle Booking API", version=APP_VERSION)
 
+# Record every request in Application Insights (see "Monitoring" near the top).
+# FastAPI was imported before monitoring started, so we switch it on for this app here.
+if os.getenv("APPLICATIONINSIGHTS_CONNECTION_STRING"):
+    from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+
+    FastAPIInstrumentor.instrument_app(app)
+
 # CORS: browsers only let movenmeal.com call this API if the API says it may.
 # Only the customer endpoints need it; the operator key is never sent from a browser.
 app.add_middleware(
@@ -438,7 +455,24 @@ OPERATOR_ONLY = [Depends(require_operator)]
 # ---------------------------------------------------------------------------
 @app.get("/health")
 def health():
+    """Shallow check: is the app process up? Container Apps' liveness and readiness
+    probes call this. It deliberately does NOT touch the database: if the database
+    is down, restarting a healthy container over and over wouldn't fix anything."""
     return {"status": "ok", "version": APP_VERSION}
+
+
+@app.get("/health/db")
+def health_db():
+    """Deep check: can the API reach its database? The Azure availability test
+    calls this every few minutes, so we hear about a database outage (or a stopped
+    server) before a customer does."""
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("SELECT 1"))
+    except Exception:
+        log.exception("Database health check failed")
+        raise HTTPException(status_code=503, detail="Database unreachable") from None
+    return {"status": "ok", "database": "ok", "version": APP_VERSION}
 
 
 @app.post("/trips", response_model=TripOut, status_code=201, dependencies=OPERATOR_ONLY)

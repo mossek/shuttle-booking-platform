@@ -7,6 +7,7 @@
 #   ├── User-assigned identity      (the app's identity, allowed to pull from ACR)
 #   ├── Container Apps environment  (the managed "cluster" the app runs in)
 #   └── Container App               (the API itself, public HTTPS endpoint)
+#   Monitoring and alerts are in monitoring.tf
 # -----------------------------------------------------------------------------
 
 locals {
@@ -113,6 +114,13 @@ resource "azurerm_container_app" "api" {
     value = random_password.operator_api_key.result
   }
 
+  # Where the app sends its monitoring data (see monitoring.tf). Not a password,
+  # but anyone holding it could send fake data, so it's kept as a secret too.
+  secret {
+    name  = "appinsights-connection-string"
+    value = azurerm_application_insights.main.connection_string
+  }
+
   # Pull from ACR using the identity above - no username/password stored
   registry {
     server   = azurerm_container_registry.main.login_server
@@ -166,6 +174,26 @@ resource "azurerm_container_app" "api" {
       env {
         name  = "NOTIFY_EMAIL"
         value = var.notify_email
+      }
+
+      # Monitoring (see monitoring.tf). When this is set, the app sends its
+      # requests, errors and logs to Application Insights.
+      env {
+        name        = "APPLICATIONINSIGHTS_CONNECTION_STRING"
+        secret_name = "appinsights-connection-string"
+      }
+
+      # The name this app shows under in Application Insights (Application map)
+      env {
+        name  = "OTEL_SERVICE_NAME"
+        value = "shuttle-api"
+      }
+
+      # Don't record the probes' calls to /health (every few seconds, all day):
+      # they'd be noise and cost. /health/db (the availability test) is still recorded.
+      env {
+        name  = "OTEL_PYTHON_FASTAPI_EXCLUDED_URLS"
+        value = "/health$"
       }
 
       # Same /health endpoint your Dockerfile HEALTHCHECK uses

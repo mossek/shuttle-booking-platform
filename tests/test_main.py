@@ -73,6 +73,23 @@ def test_health_returns_ok(client):
     assert response.json()["status"] == "ok"
 
 
+def test_health_db_reports_database_ok(client):
+    response = client.get("/health/db")
+    assert response.status_code == 200
+    assert response.json()["database"] == "ok"
+
+
+def test_health_db_returns_503_when_database_is_down(client, monkeypatch):
+    def broken_connect(*args, **kwargs):
+        raise RuntimeError("database server is stopped")
+
+    monkeypatch.setattr(main.engine, "connect", broken_connect)
+    response = client.get("/health/db")
+    assert response.status_code == 503
+    # The shallow check stays green: the container itself is fine
+    assert client.get("/health").status_code == 200
+
+
 def test_new_trip_is_open_with_8_seats(client):
     response = client.post("/trips", json=VALID_TRIP)
     assert response.status_code == 201
