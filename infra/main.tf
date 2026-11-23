@@ -98,7 +98,9 @@ resource "azurerm_container_app" "api" {
   name                         = "ca-${local.name}-api"
   resource_group_name          = azurerm_resource_group.main.name
   container_app_environment_id = azurerm_container_app_environment.main.id
-  revision_mode                = "Single" # one live version at a time
+  # "Multiple": old and new versions can run side by side, and the pipeline
+  # decides how much traffic each gets (blue-green deploy, see ci.yml).
+  revision_mode = "Multiple"
   tags                         = local.tags
   workload_profile_name        = "Consumption"
 
@@ -226,6 +228,8 @@ resource "azurerm_container_app" "api" {
   lifecycle {
     ignore_changes = [template[0].container[0].image,
       registry[0].identity,
+      # The pipeline moves traffic between revisions; Terraform must not undo it
+      ingress[0].traffic_weight,
     ]
   }
 
